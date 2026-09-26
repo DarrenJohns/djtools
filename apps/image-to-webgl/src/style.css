@@ -89,8 +89,7 @@ h1 {
   min-height: 6.25rem;
   min-width: 0;
   text-align: center;
-  border-color: rgba(67, 213, 160, 0.55);
-  border-style: dashed;
+  border: 2px dashed rgba(66, 198, 243, 0.65);
   cursor: pointer;
   transition: border-color 150ms ease, background-color 150ms ease;
 }
@@ -99,7 +98,7 @@ h1 {
 .file-drop-zone:focus-within,
 .file-drop-zone[data-dragging="true"] {
   border-color: #42c6f3;
-  background: rgba(24, 72, 104, 0.72);
+  background: rgba(24, 72, 104, 0.38);
 }
 
 .file-drop-zone[data-state="error"] {
@@ -187,7 +186,7 @@ button:disabled {
 .file-details {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
-  gap: 0.65rem;
+  gap: clamp(0.85rem, 2vw, 1.2rem);
 }
 
 .file-details .download-link {
@@ -201,10 +200,9 @@ button:disabled {
   display: flex;
   align-items: center;
   min-height: 2.8rem;
-  padding: 0.8rem 1rem;
-  border-left: 3px solid #43d5a0;
-  color: #bcf3df;
-  background: rgba(7, 18, 34, 0.7);
+  padding: 0.8rem 0.25rem;
+  color: #d7e5f4;
+  background: transparent;
   font-size: 0.78rem;
   line-height: 1.4;
 }
@@ -213,8 +211,11 @@ button:disabled {
   pointer-events: none;
 }
 
+.status[data-kind="success"] {
+  color: #bcf3df;
+}
+
 .status[data-kind="error"] {
-  border-left-color: #ff6c7b;
   color: #ffc3ca;
 }
 
@@ -266,6 +267,44 @@ button:disabled {
 #viewer {
   position: absolute;
   inset: 0;
+}
+
+.viewer-fallback {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  min-width: 0;
+  padding: clamp(7rem, 16vh, 10rem) clamp(1rem, 5vw, 4rem) clamp(4rem, 10vh, 7rem);
+  border: 1px solid rgba(191, 216, 243, 0.12);
+  color: #dceaf8;
+  background:
+    radial-gradient(circle at 50% 45%, rgba(38, 161, 224, 0.14), transparent 45%),
+    rgba(3, 10, 20, 0.88);
+  text-align: center;
+  overflow: hidden;
+}
+
+.viewer-fallback-title {
+  max-width: 24ch;
+  margin: 0;
+  color: #f7fbff;
+  font-size: clamp(1.25rem, 2.5vw, 1.75rem);
+  line-height: 1.2;
+  letter-spacing: -0.025em;
+  overflow-wrap: anywhere;
+}
+
+.viewer-fallback-message {
+  max-width: 44ch;
+  margin: 0.65rem 0 0;
+  color: #a8b9ce;
+  font-size: clamp(0.8rem, 1.4vw, 0.95rem);
+  line-height: 1.55;
+  overflow-wrap: anywhere;
 }
 
 .viewer-hint {
@@ -346,7 +385,6 @@ button:disabled {
   margin: 0;
 }
 
-.file-drop-zone:has(input:focus-visible),
 button:focus-visible,
 a:focus-visible,
 input:focus-visible,
@@ -355,13 +393,61 @@ input:focus-visible,
   outline-offset: 3px;
 }
 
+.file-drop-zone:has(input:focus-visible) {
+  border-color: #42c6f3;
+  outline: 3px solid #42c6f3;
+  outline-offset: 3px;
+  background: rgba(24, 72, 104, 0.38);
+}
+
 @media (min-width: 801px) {
+  .layout {
+    --control-panel-width: min(27.5rem, 55vw);
+    position: relative;
+    display: block;
+  }
+
+  .control-panel {
+    position: absolute;
+    inset: 0 auto 0 0;
+    width: var(--control-panel-width);
+    gap: 0.75rem;
+    padding-bottom: 4.1rem;
+    background:
+      radial-gradient(circle at 15% 5%, rgba(38, 161, 224, 0.2), transparent 35%),
+      rgba(7, 18, 34, 0.76);
+    border-right-color: rgba(191, 216, 243, 0.22);
+    box-shadow:
+      inset -1px 0 0 rgba(255, 255, 255, 0.035),
+      0.8rem 0 2rem rgba(1, 7, 15, 0.18);
+    backdrop-filter: blur(22px) saturate(145%);
+    -webkit-backdrop-filter: blur(22px) saturate(145%);
+    z-index: 3;
+  }
+
   .source-actions {
     margin-top: auto;
+    flex: 1 1 6.25rem;
+    min-height: 6.25rem;
+    max-height: 12.75rem;
+  }
+
+  .file-drop-zone {
+    height: 100%;
   }
 
   .file-details {
-    margin-bottom: clamp(2.5rem, 7vh, 4rem);
+    margin-bottom: 0;
+  }
+
+  .viewer-panel {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+  }
+
+  .parameter-bar {
+    left: calc(var(--control-panel-width) + 1rem);
   }
 }
 
@@ -381,6 +467,22 @@ input:focus-visible,
 
 .viewer-panel[data-environment="light"] .parameter-bar .range-control output {
   color: #26394c;
+}
+
+.viewer-panel[data-environment="light"] .viewer-fallback {
+  border-color: rgba(255, 255, 255, 0.68);
+  color: #26394c;
+  background:
+    radial-gradient(circle at 50% 45%, rgba(255, 255, 255, 0.72), transparent 48%),
+    rgba(219, 231, 243, 0.9);
+}
+
+.viewer-panel[data-environment="light"] .viewer-fallback-title {
+  color: #1b2d40;
+}
+
+.viewer-panel[data-environment="light"] .viewer-fallback-message {
+  color: #455c73;
 }
 
 .viewer-panel[data-environment="light"] .viewer-hint {
@@ -417,9 +519,17 @@ input:focus-visible,
     margin-top: 1.5rem;
   }
 
+  .project-credit {
+    position: static;
+  }
+
   .viewer-panel {
     height: auto;
     min-height: 60vh;
+  }
+
+  .viewer-fallback {
+    padding-top: clamp(11.5rem, 28vh, 13rem);
   }
 
   .parameter-bar {
@@ -457,6 +567,11 @@ input:focus-visible,
   .environment-toggle {
     top: 0.75rem;
     right: 0.75rem;
+  }
+
+  .viewer-fallback {
+    padding-right: 1rem;
+    padding-left: 1rem;
   }
 
   .viewer-hint {

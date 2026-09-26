@@ -30,6 +30,391 @@ const browser = await chromium.launch({
   args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'],
 })
 
+function collectDiagnostics(page) {
+  const pageErrors = []
+  const consoleErrors = []
+  page.on('pageerror', (error) => pageErrors.push(error.message))
+  page.on('console', (message) => {
+    if (message.type() === 'error') consoleErrors.push(message.text())
+  })
+  return { pageErrors, consoleErrors }
+}
+
+function assertExpectedDiagnostics(
+  label,
+  { pageErrors, consoleErrors },
+  expectedConsoleErrors,
+) {
+  if (pageErrors.length > 0) {
+    throw new Error(`${label} page errors: ${pageErrors.join('; ')}`)
+  }
+
+  const unexpected = consoleErrors.filter(
+    (message) => !expectedConsoleErrors.some((pattern) => pattern.test(message)),
+  )
+  if (unexpected.length > 0) {
+    throw new Error(`${label} unexpected console errors: ${unexpected.join('; ')}`)
+  }
+  for (const pattern of expectedConsoleErrors) {
+    if (!consoleErrors.some((message) => pattern.test(message))) {
+      throw new Error(`${label} did not log expected renderer error ${pattern}.`)
+    }
+  }
+}
+
+async function waitForSuccessfulConversion(page) {
+  await page.waitForFunction(
+    () => document.querySelector('#status')?.dataset.kind === 'success',
+    undefined,
+    { timeout: 60_000 },
+  )
+}
+
+async function assertDownloadUsable(page, label) {
+  const downloadLink = page.locator('#download-link')
+  const downloadState = await downloadLink.evaluate((link) => ({
+    ariaDisabled: link.getAttribute('aria-disabled'),
+    download: link.getAttribute('download'),
+    href: link.getAttribute('href'),
+  }))
+  if (
+    downloadState.ariaDisabled !== null ||
+    !downloadState.download?.endsWith('.glb') ||
+    !downloadState.href?.startsWith('blob:')
+  ) {
+    throw new Error(`${label} GLB download is not enabled: ${JSON.stringify(downloadState)}`)
+  }
+
+  const downloadPromise = page.waitForEvent('download')
+  await downloadLink.click()
+  const download = await downloadPromise
+  const failure = await download.failure()
+  if (failure || !download.suggestedFilename().endsWith('.glb')) {
+    throw new Error(
+      `${label} GLB download failed: ${failure ?? download.suggestedFilename()}`,
+    )
+  }
+}
+
+async function checkStartupRendererFailure() {
+  const context = await browser.newContext({ viewport: { width: 1200, height: 800 } })
+  try {
+    await context.addInitScript(() => {
+      const nativeGetContext = HTMLCanvasElement.prototype.getContext
+      HTMLCanvasElement.prototype.getContext = function getContext(type, ...args) {
+        if (['webgl', 'webgl2', 'experimental-webgl'].includes(type)) return null
+        return nativeGetContext.call(this, type, ...args)
+      }
+    })
+    const page = await context.newPage()
+    const diagnostics = collectDiagnostics(page)
+
+    await page.goto(baseUrl, { waitUntil: 'networkidle' })
+    await waitForSuccessfulConversion(page)
+
+    const fallback = page.locator('#viewer .viewer-fallback')
+    const fallbackState = await fallback.evaluate((element) => ({
+      role: element.getAttribute('role'),
+      live: element.getAttribute('aria-live'),
+      text: element.textContent?.replace(/\s+/g, ' ').trim(),
+    }))
+    if (
+      fallbackState.role !== 'status' ||
+      fallbackState.live !== 'polite' ||
+      !fallbackState.text?.includes('3D preview unavailable') ||
+      !fallbackState.text.includes('can still be downloaded')
+    ) {
+      throw new Error(
+        `Startup renderer failure has no accessible fallback: ${JSON.stringify(fallbackState)}`,
+      )
+    }
+    if (await page.locator('#viewer canvas').count() !== 0) {
+      throw new Error('Startup renderer failure left a preview canvas behind.')
+    }
+    await assertDownloadUsable(page, 'Startup renderer failure')
+    assertExpectedDiagnostics('Startup renderer failure', diagnostics, [
+      /THREE\.WebGLRenderer: Error creating WebGL context/,
+      /Unable to initialize the 3D preview renderer\./,
+    ])
+  } finally {
+    await context.close()
+  }
+}
+
+async function checkRuntimeContextLoss() {
+  const context = await browser.newContext({ viewport: { width: 1200, height: 800 } })
+  try {
+    const page = await context.newPage()
+    const diagnostics = collectDiagnostics(page)
+
+    await page.goto(baseUrl, { waitUntil: 'networkidle' })
+    await waitForSuccessfulConversion(page)
+    const originalHref = await page.locator('#download-link').getAttribute('href')
+
+    const contextLoss = await page.locator('#viewer canvas').evaluate((canvas) => {
+      const event = new Event('webglcontextlost', { cancelable: true })
+      const dispatchResult = canvas.dispatchEvent(event)
+      return { defaultPrevented: event.defaultPrevented, dispatchResult }
+    })
+    if (!contextLoss.defaultPrevented || contextLoss.dispatchResult) {
+      throw new Error(`Runtime context loss was not canceled: ${JSON.stringify(contextLoss)}`)
+    }
+
+    const fallback = page.locator('#viewer .viewer-fallback')
+    const fallbackState = await fallback.evaluate((element) => ({
+      role: element.getAttribute('role'),
+      live: element.getAttribute('aria-live'),
+      text: element.textContent?.replace(/\s+/g, ' ').trim(),
+    }))
+    if (
+      fallbackState.role !== 'alert' ||
+      fallbackState.live !== 'assertive' ||
+      !fallbackState.text?.includes('3D preview unavailable') ||
+      !fallbackState.text.includes('can still be converted')
+    ) {
+      throw new Error(
+        `Runtime context loss has no accessible fallback: ${JSON.stringify(fallbackState)}`,
+      )
+    }
+    if (await page.locator('#viewer canvas').count() !== 0) {
+      throw new Error('Runtime context loss did not stop and remove the preview canvas.')
+    }
+    if (
+      !await page.locator('#file-drop-zone').isVisible() ||
+      !await page.locator('.parameter-bar').isVisible() ||
+      !await page.locator('#environment-toggle').isEnabled()
+    ) {
+      throw new Error('Runtime context loss disabled behavior outside the preview.')
+    }
+
+    await page.locator('#depth').evaluate((input) => {
+      input.value = '0.13'
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+      input.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+    await page.waitForFunction(
+      (previousHref) => {
+        const link = document.querySelector('#download-link')
+        const status = document.querySelector('#status')
+        return status?.dataset.kind === 'success' &&
+          link?.getAttribute('href') !== previousHref
+      },
+      originalHref,
+      { timeout: 60_000 },
+    )
+    if (!await fallback.isVisible()) {
+      throw new Error('A post-loss conversion removed the preview fallback.')
+    }
+
+    await assertDownloadUsable(page, 'Runtime context loss')
+    assertExpectedDiagnostics('Runtime context loss', diagnostics, [
+      /The WebGL context was lost; the 3D preview has been disabled\./,
+    ])
+  } finally {
+    await context.close()
+  }
+}
+
+async function readViewerLayout(page) {
+  return page.evaluate(() => {
+    const box = (selector) =>
+      document.querySelector(selector)?.getBoundingClientRect().toJSON()
+    const panel = document.querySelector('.control-panel')
+    const canvas = document.querySelector('#viewer canvas')
+    const panelStyle = panel ? getComputedStyle(panel) : null
+    const canvasStyle = canvas ? getComputedStyle(canvas) : null
+    const panelBounds = panel?.getBoundingClientRect()
+    const hit = panelBounds
+      ? document.elementFromPoint(
+          panelBounds.left + panelBounds.width / 2,
+          panelBounds.top + panelBounds.height / 2,
+        )
+      : null
+
+    return {
+      viewport: { width: window.innerWidth, height: window.innerHeight },
+      document: {
+        width: document.documentElement.scrollWidth,
+        height: document.documentElement.scrollHeight,
+      },
+      layout: box('.layout'),
+      panel: box('.control-panel'),
+      viewer: box('.viewer-panel'),
+      canvas: box('#viewer canvas'),
+      footer: box('.project-credit'),
+      panelStyle: panelStyle && {
+        backgroundColor: panelStyle.backgroundColor,
+        backdropFilter: panelStyle.backdropFilter,
+        webkitBackdropFilter: panelStyle.webkitBackdropFilter,
+        pointerEvents: panelStyle.pointerEvents,
+        position: panelStyle.position,
+        zIndex: panelStyle.zIndex,
+      },
+      canvasStyle: canvasStyle && {
+        position: canvasStyle.position,
+        zIndex: canvasStyle.zIndex,
+      },
+      panelOwnsHit: Boolean(hit && panel?.contains(hit)),
+      projectedCenter: canvas && {
+        x: Number(canvas.dataset.projectedCenterX),
+        y: Number(canvas.dataset.projectedCenterY),
+      },
+      cameraPosition: canvas?.dataset.cameraPosition,
+    }
+  })
+}
+
+function assertFullViewportViewer(layout, label) {
+  const { viewport, viewer, canvas } = layout
+  for (const [name, bounds] of [['viewer', viewer], ['canvas', canvas]]) {
+    if (
+      !bounds ||
+      Math.abs(bounds.x) > 1 ||
+      Math.abs(bounds.y) > 1 ||
+      Math.abs(bounds.width - viewport.width) > 1 ||
+      Math.abs(bounds.height - viewport.height) > 1
+    ) {
+      throw new Error(
+        `${label} ${name} does not span the viewport: ${JSON.stringify(bounds)}.`,
+      )
+    }
+  }
+}
+
+function assertDesktopFraming(layout, label) {
+  assertFullViewportViewer(layout, label)
+  const { viewport, panel, projectedCenter, panelStyle, panelOwnsHit } = layout
+  if (!panel || !projectedCenter || !panelStyle) {
+    throw new Error(`${label} desktop framing could not be measured.`)
+  }
+
+  const expectedX = panel.x + panel.width + (
+    viewport.width - panel.x - panel.width
+  ) / 2
+  const expectedY = viewport.height / 2
+  const tolerance = Math.max(12, viewport.width * 0.015)
+  if (
+    !Number.isFinite(projectedCenter.x) ||
+    !Number.isFinite(projectedCenter.y) ||
+    Math.abs(projectedCenter.x - expectedX) > tolerance ||
+    Math.abs(projectedCenter.y - expectedY) > tolerance
+  ) {
+    throw new Error(
+      `${label} model is not centered in the unobstructed viewer: expected ` +
+      `${expectedX.toFixed(1)},${expectedY.toFixed(1)}, got ` +
+      `${projectedCenter.x},${projectedCenter.y}.`,
+    )
+  }
+
+  const alpha = Number(panelStyle.backgroundColor.match(
+    /rgba?\([^,]+,[^,]+,[^,]+(?:,\s*([\d.]+))?\)/,
+  )?.[1] ?? 1)
+  const filter = `${panelStyle.backdropFilter} ${panelStyle.webkitBackdropFilter}`
+  if (
+    alpha >= 1 ||
+    !filter.includes('blur(22px)') ||
+    !filter.includes('saturate(1.45)') && !filter.includes('saturate(145%)') ||
+    panelStyle.position !== 'absolute' ||
+    panelStyle.pointerEvents === 'none' ||
+    Number(panelStyle.zIndex) <= Number(layout.canvasStyle?.zIndex || 0) ||
+    !panelOwnsHit
+  ) {
+    throw new Error(
+      `${label} sidebar is not a translucent, interactive canvas overlay: ` +
+      JSON.stringify({
+        panelStyle,
+        canvasStyle: layout.canvasStyle,
+        panelOwnsHit,
+      }),
+    )
+  }
+}
+
+async function checkDesktopOverlay(viewport, { checkSpacing = false } = {}) {
+  const context = await browser.newContext({ viewport })
+  try {
+    const page = await context.newPage()
+    const diagnostics = collectDiagnostics(page)
+    await page.goto(baseUrl, { waitUntil: 'networkidle' })
+    await waitForSuccessfulConversion(page)
+    await page.waitForFunction(() => (
+      Number.isFinite(Number(document.querySelector('#viewer canvas')?.dataset.projectedCenterX))
+    ))
+
+    const label = `${viewport.width}x${viewport.height}`
+    const layout = await readViewerLayout(page)
+    assertDesktopFraming(layout, label)
+    if (layout.document.height > viewport.height + 1) {
+      throw new Error(`${label} desktop overlay unexpectedly scrolls.`)
+    }
+    if (
+      !layout.footer ||
+      Math.abs(layout.footer.y + layout.footer.height - (viewport.height - 21.6)) > 2
+    ) {
+      throw new Error(`${label} footer is not anchored to the sidebar bottom.`)
+    }
+
+    const creditClicked = await page.locator('.project-credit a').evaluate((link) => (
+      new Promise((resolve) => {
+        link.addEventListener('click', (event) => {
+          event.preventDefault()
+          resolve(true)
+        }, { once: true })
+        link.click()
+      })
+    ))
+    if (!creditClicked) {
+      throw new Error(`${label} sidebar did not receive pointer interaction.`)
+    }
+
+    const canvas = page.locator('#viewer canvas')
+    const beforeCamera = await canvas.getAttribute('data-camera-position')
+    const unobstructedX = layout.panel.x + layout.panel.width +
+      (viewport.width - layout.panel.x - layout.panel.width) * 0.62
+    await page.mouse.move(unobstructedX, viewport.height * 0.56)
+    await page.mouse.down()
+    await page.mouse.move(unobstructedX + 110, viewport.height * 0.48, { steps: 8 })
+    await page.mouse.up()
+    await page.waitForFunction((before) => (
+      document.querySelector('#viewer canvas')?.dataset.cameraPosition !== before
+    ), beforeCamera)
+
+    const afterInteraction = await readViewerLayout(page)
+    assertFullViewportViewer(afterInteraction, `${label} after orbit`)
+    if (afterInteraction.cameraPosition === beforeCamera) {
+      throw new Error(`${label} object did not respond through the overlaid canvas.`)
+    }
+
+    if (checkSpacing) {
+      const spacing = await page.evaluate(() => {
+        const rect = (selector) =>
+          document.querySelector(selector).getBoundingClientRect()
+        const drop = rect('#file-drop-zone')
+        const details = rect('.file-details')
+        const footer = rect('.project-credit')
+        return {
+          dropHeight: drop.height,
+          dropToDetails: details.top - drop.bottom,
+          detailsToFooter: footer.top - details.bottom,
+        }
+      })
+      if (
+        Math.abs(spacing.dropHeight - 204) > 1 ||
+        Math.abs(spacing.dropToDetails - 12) > 1 ||
+        Math.abs(spacing.detailsToFooter - 12) > 1
+      ) {
+        throw new Error(
+          `${label} approved sidebar dimensions changed: ${JSON.stringify(spacing)}.`,
+        )
+      }
+    }
+
+    assertExpectedDiagnostics(label, diagnostics, [])
+  } finally {
+    await context.close()
+  }
+}
+
 try {
   const page = await browser.newPage({ viewport: { width: 1440, height: 960 } })
   const pageErrors = []
@@ -44,7 +429,7 @@ try {
       window.__initialFileChrome = {
         dropBorderColor: dropZone ? getComputedStyle(dropZone).borderColor : '',
         downloadBounds: downloadLink?.getBoundingClientRect().toJSON(),
-        statusBorderColor: getComputedStyle(status).borderLeftColor,
+        statusBackgroundColor: getComputedStyle(status).backgroundColor,
       }
       const checkStatus = () => {
         if (/(?:Loading the local sample|Tracing silhouette)/.test(status.textContent ?? '')) {
@@ -104,7 +489,7 @@ try {
       current: {
         dropBorderColor: dropZone ? getComputedStyle(dropZone).borderColor : '',
         downloadBounds: downloadLink?.getBoundingClientRect().toJSON(),
-        statusBorderColor: status ? getComputedStyle(status).borderLeftColor : '',
+        statusBackgroundColor: status ? getComputedStyle(status).backgroundColor : '',
       },
     }
   })
@@ -113,7 +498,7 @@ try {
     fileChrome.initial.downloadBounds.width !== fileChrome.current.downloadBounds?.width ||
     fileChrome.initial.downloadBounds.height !== fileChrome.current.downloadBounds?.height ||
     fileChrome.initial.dropBorderColor !== fileChrome.current.dropBorderColor ||
-    fileChrome.initial.statusBorderColor !== fileChrome.current.statusBorderColor
+    fileChrome.initial.statusBackgroundColor !== fileChrome.current.statusBackgroundColor
   ) {
     throw new Error(`The file controls changed appearance during startup: ${JSON.stringify(fileChrome)}`)
   }
@@ -140,8 +525,10 @@ try {
   if (!introBounds || !dropZoneBounds) {
     throw new Error('The source controls could not be measured.')
   }
-  if (dropZoneBounds.height < 96) {
-    throw new Error(`The PNG file drop zone is too short: ${dropZoneBounds.height}px.`)
+  if (Math.abs(dropZoneBounds.height - 204) > 1) {
+    throw new Error(
+      `The desktop PNG file drop zone did not reach its 12.75rem cap: ${dropZoneBounds.height}px.`,
+    )
   }
   if (
     dropZoneBounds.y < pageMetrics.viewportHeight * 0.65 ||
@@ -181,6 +568,25 @@ try {
     pageMetrics.viewportHeight - (creditBounds.y + creditBounds.height) > 32
   ) {
     throw new Error('The DJ Tools credit extends beyond the desktop viewport.')
+  }
+  const fileDetailsBounds = await page.locator('.file-details').boundingBox()
+  if (!fileDetailsBounds) {
+    throw new Error('The file details row could not be measured.')
+  }
+  const dropToDetailsGap = fileDetailsBounds.y - (
+    dropZoneBounds.y + dropZoneBounds.height
+  )
+  const detailsToFooterGap = creditBounds.y - (
+    fileDetailsBounds.y + fileDetailsBounds.height
+  )
+  if (
+    Math.abs(dropToDetailsGap - 12) > 1 ||
+    Math.abs(detailsToFooterGap - 12) > 1 ||
+    Math.abs(dropToDetailsGap - detailsToFooterGap) > 1
+  ) {
+    throw new Error(
+      `The desktop sidebar gaps are unbalanced: drop/details ${dropToDetailsGap}px, details/footer ${detailsToFooterGap}px.`,
+    )
   }
 
   const canvasBounds = await page.locator('#viewer canvas').boundingBox()
@@ -400,6 +806,9 @@ try {
     throw new Error(`Reduced-motion styles were not applied: ${JSON.stringify(reducedMotionStyles)}`)
   }
 
+  await checkDesktopOverlay({ width: 1440, height: 960 }, { checkSpacing: true })
+  await checkDesktopOverlay({ width: 1440, height: 700 })
+
   for (const viewport of [
     { width: 800, height: 960 },
     { width: 375, height: 812 },
@@ -414,6 +823,8 @@ try {
         { timeout: 60_000 },
       )
       const mobileLayout = await mobilePage.evaluate(() => {
+        const panel = document.querySelector('.control-panel')
+        const canvas = document.querySelector('#viewer canvas')
         const viewer = document.querySelector('.viewer-panel')?.getBoundingClientRect()
         const overlays = ['#environment-toggle', '.viewer-hint', '.parameter-bar']
           .map((selector) => document.querySelector(selector)?.getBoundingClientRect())
@@ -421,8 +832,15 @@ try {
           viewportWidth: window.innerWidth,
           documentWidth: document.documentElement.scrollWidth,
           touchEnabled: 'ontouchstart' in window,
+          panel: panel?.getBoundingClientRect().toJSON(),
+          panelBackground: panel ? getComputedStyle(panel).backgroundColor : '',
+          panelBackdrop: panel ? getComputedStyle(panel).backdropFilter : '',
           viewer: viewer?.toJSON(),
           overlays: overlays.map((rect) => rect?.toJSON()),
+          projectedCenter: canvas && {
+            x: Number(canvas.dataset.projectedCenterX),
+            y: Number(canvas.dataset.projectedCenterY),
+          },
         }
       })
       if (mobileLayout.documentWidth > mobileLayout.viewportWidth + 1) {
@@ -432,6 +850,30 @@ try {
       }
       if (!mobileLayout.touchEnabled || !mobileLayout.viewer) {
         throw new Error(`${viewport.width}px layout is not touch-capable or has no viewer.`)
+      }
+      const mobileAlpha = Number(mobileLayout.panelBackground.match(
+        /rgba?\([^,]+,[^,]+,[^,]+(?:,\s*([\d.]+))?\)/,
+      )?.[1] ?? 1)
+      if (
+        !mobileLayout.panel ||
+        mobileLayout.viewer.y < mobileLayout.panel.y + mobileLayout.panel.height - 1 ||
+        mobileAlpha !== 1 ||
+        mobileLayout.panelBackdrop !== 'none'
+      ) {
+        throw new Error(
+          `${viewport.width}px control panel is not stacked and opaque: ` +
+          JSON.stringify(mobileLayout),
+        )
+      }
+      const projected = mobileLayout.projectedCenter
+      if (
+        !projected ||
+        Math.abs(projected.x - mobileLayout.viewer.width / 2) > 12 ||
+        Math.abs(projected.y - mobileLayout.viewer.height / 2) > 12
+      ) {
+        throw new Error(
+          `${viewport.width}px camera retained an offset: ${JSON.stringify(projected)}.`,
+        )
       }
       for (const overlay of mobileLayout.overlays) {
         if (
@@ -465,6 +907,9 @@ try {
       await mobilePage.close()
     }
   }
+
+  await checkStartupRendererFailure()
+  await checkRuntimeContextLoss()
 } finally {
   await browser.close()
 }

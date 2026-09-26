@@ -18,46 +18,30 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 
 export class ModelViewer {
   private readonly container: HTMLElement
+  private readonly controlPanel: HTMLElement | null
   private readonly scene = new Scene()
   private readonly camera = new PerspectiveCamera(42, 1, 0.01, 100)
-  private readonly renderer: WebGLRenderer
-  private readonly controls: OrbitControls
-  private readonly resizeObserver: ResizeObserver
+  private renderer: WebGLRenderer | null = null
+  private controls: OrbitControls | null = null
+  private resizeObserver: ResizeObserver | null = null
   private readonly ambient = new AmbientLight()
   private readonly key = new DirectionalLight()
   private readonly rim = new DirectionalLight()
-  private grid: GridHelper
+  private readonly projectionProbe = new Vector3()
+  private grid: GridHelper | null = null
   private model: Group | null = null
+  private fallback: HTMLElement | null = null
   private modelExtent = 1
   private animationFrame = 0
+  private disposed = false
   private readonly reducedMotionQuery = window.matchMedia('(prefers-reduced-motion: reduce)')
+  private readonly desktopFramingQuery = window.matchMedia('(min-width: 801px)')
 
   constructor(container: HTMLElement) {
     this.container = container
+    this.controlPanel = container.closest('.layout')?.querySelector<HTMLElement>('.control-panel') ?? null
     this.scene.background = new Color(0x101827)
     this.camera.position.set(2.3, 1.5, 2.8)
-
-    this.renderer = new WebGLRenderer({ antialias: true })
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
-    this.renderer.shadowMap.enabled = true
-    this.renderer.domElement.tabIndex = 0
-    this.renderer.domElement.setAttribute('role', 'img')
-    this.renderer.domElement.setAttribute(
-      'aria-label',
-      'Interactive 3D object preview. Use arrow keys to rotate, plus or minus to zoom, and Home to reset the view.',
-    )
-    this.renderer.domElement.setAttribute('aria-describedby', 'viewer-hint')
-    this.renderer.domElement.setAttribute(
-      'aria-keyshortcuts',
-      'ArrowLeft ArrowRight ArrowUp ArrowDown + - Home',
-    )
-    container.appendChild(this.renderer.domElement)
-
-    this.controls = new OrbitControls(this.camera, this.renderer.domElement)
-    this.controls.dampingFactor = 0.06
-    this.updateMotionPreference()
-    this.reducedMotionQuery.addEventListener('change', this.updateMotionPreference)
-    this.renderer.domElement.addEventListener('keydown', this.handleKeyDown)
 
     this.scene.add(this.ambient)
 
@@ -68,11 +52,14 @@ export class ModelViewer {
     this.rim.position.set(-4, 2, -3)
     this.scene.add(this.rim)
 
-    this.grid = new GridHelper()
+    if (!this.initializeRenderer()) return
+
     this.setEnvironment('dark')
 
     this.resizeObserver = new ResizeObserver(() => this.resize())
     this.resizeObserver.observe(container)
+    if (this.controlPanel) this.resizeObserver.observe(this.controlPanel)
+    this.desktopFramingQuery.addEventListener('change', this.resize)
     this.resize()
     this.animate()
   }
@@ -81,6 +68,8 @@ export class ModelViewer {
     glb: ArrayBuffer,
     { preserveView = false }: { preserveView?: boolean } = {},
   ): Promise<void> {
+    if (!this.renderer || !this.controls) return
+
     const loader = new GLTFLoader()
     let loaded: Group
     try {
@@ -88,6 +77,11 @@ export class ModelViewer {
       loaded = gltf.scene
     } catch (error) {
       throw new Error('The generated GLB could not be loaded for preview.', { cause: error })
+    }
+
+    if (!this.renderer || !this.controls) {
+      this.disposeModel(loaded)
+      return
     }
 
     if (this.model) {
@@ -117,6 +111,8 @@ export class ModelViewer {
   }
 
   private restoreDefaultView(): void {
+    if (!this.renderer || !this.controls) return
+
     const extent = this.modelExtent
     this.controls.target.set(0, 0, 0)
     this.camera.up.set(0, 1, 0)
@@ -126,6 +122,8 @@ export class ModelViewer {
   }
 
   setEnvironment(mode: 'dark' | 'light'): void {
+    if (!this.renderer) return
+
     this.scene.background = new Color(mode === 'dark' ? 0x101827 : 0xe8eef5)
     this.ambient.color.set(mode === 'dark' ? 0xffffff : 0xdde8f3)
     this.ambient.intensity = mode === 'dark' ? 1.1 : 1.7
@@ -134,8 +132,10 @@ export class ModelViewer {
     this.rim.color.set(mode === 'dark' ? 0x66c8ff : 0x6a8eae)
     this.rim.intensity = mode === 'dark' ? 1.6 : 0.8
 
-    this.scene.remove(this.grid)
-    this.grid.dispose()
+    if (this.grid) {
+      this.scene.remove(this.grid)
+      this.grid.dispose()
+    }
     this.grid = new GridHelper(
       5,
       20,
@@ -147,24 +147,58 @@ export class ModelViewer {
   }
 
   dispose(): void {
+    if (this.disposed) return
+    this.disposed = true
+
     cancelAnimationFrame(this.animationFrame)
-    this.resizeObserver.disconnect()
+    this.resizeObserver?.disconnect()
+    this.resizeObserver = null
     this.reducedMotionQuery.removeEventListener('change', this.updateMotionPreference)
-    this.renderer.domElement.removeEventListener('keydown', this.handleKeyDown)
-    this.controls.dispose()
+    this.desktopFramingQuery.removeEventListener('change', this.resize)
+    this.controls?.dispose()
+    this.controls = null
     if (this.model) {
+      this.scene.remove(this.model)
       this.disposeModel(this.model)
       this.model = null
     }
-    this.grid.dispose()
-    this.renderer.dispose()
-    this.renderer.domElement.remove()
+    if (this.grid) {
+      this.scene.remove(this.grid)
+      this.grid.dispose()
+      this.grid = null
+    }
+    if (this.renderer) {
+      this.renderer.domElement.removeEventListener('keydown', this.handleKeyDown)
+      this.renderer.domElement.removeEventListener('webglcontextlost', this.handleContextLost)
+      this.renderer.dispose()
+      this.renderer.domElement.remove()
+      this.renderer = null
+    }
+    this.fallback?.remove()
+    this.fallback = null
   }
 
-  private resize(): void {
+  private resize = (): void => {
+    if (!this.renderer) return
+
     const width = Math.max(1, this.container.clientWidth)
     const height = Math.max(1, this.container.clientHeight)
     this.camera.aspect = width / height
+    this.camera.clearViewOffset()
+
+    if (this.desktopFramingQuery.matches && this.controlPanel) {
+      const viewerBounds = this.container.getBoundingClientRect()
+      const panelBounds = this.controlPanel.getBoundingClientRect()
+      const obscuredWidth = Math.max(
+        0,
+        Math.min(width, panelBounds.right - viewerBounds.left),
+      )
+
+      if (obscuredWidth > 0) {
+        this.camera.setViewOffset(width, height, -obscuredWidth / 2, 0, width, height)
+      }
+    }
+
     this.camera.updateProjectionMatrix()
     this.renderer.setSize(width, height, false)
   }
@@ -186,11 +220,15 @@ export class ModelViewer {
   }
 
   private updateMotionPreference = (): void => {
+    if (!this.renderer || !this.controls) return
+
     this.controls.enableDamping = !this.reducedMotionQuery.matches
     this.renderer.domElement.dataset.motion = this.reducedMotionQuery.matches ? 'reduced' : 'full'
   }
 
   private handleKeyDown = (event: KeyboardEvent): void => {
+    if (!this.renderer || !this.controls) return
+
     const offset = this.camera.position.clone().sub(this.controls.target)
     const rotationStep = Math.PI / 18
 
@@ -234,8 +272,130 @@ export class ModelViewer {
   }
 
   private animate = (): void => {
+    if (!this.renderer || !this.controls) return
+
     this.animationFrame = requestAnimationFrame(this.animate)
     this.controls.update()
+    const projectedCenter = this.projectionProbe.set(0, 0, 0).project(this.camera)
+    const canvas = this.renderer.domElement
+    canvas.dataset.projectedCenterX = (
+      (projectedCenter.x + 1) * this.container.clientWidth / 2
+    ).toFixed(2)
+    canvas.dataset.projectedCenterY = (
+      (1 - projectedCenter.y) * this.container.clientHeight / 2
+    ).toFixed(2)
+    const { x, y, z } = this.camera.position
+    canvas.dataset.cameraPosition =
+      `${x.toFixed(5)},${y.toFixed(5)},${z.toFixed(5)}`
     this.renderer.render(this.scene, this.camera)
+  }
+
+  private initializeRenderer(): boolean {
+    let renderer: WebGLRenderer | null = null
+    let controls: OrbitControls | null = null
+
+    try {
+      renderer = new WebGLRenderer({ antialias: true })
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
+      renderer.shadowMap.enabled = true
+      renderer.domElement.tabIndex = 0
+      renderer.domElement.setAttribute('role', 'img')
+      renderer.domElement.setAttribute(
+        'aria-label',
+        'Interactive 3D object preview. Use arrow keys to rotate, plus or minus to zoom, and Home to reset the view.',
+      )
+      renderer.domElement.setAttribute('aria-describedby', 'viewer-hint')
+      renderer.domElement.setAttribute(
+        'aria-keyshortcuts',
+        'ArrowLeft ArrowRight ArrowUp ArrowDown + - Home',
+      )
+      renderer.domElement.addEventListener('keydown', this.handleKeyDown)
+      renderer.domElement.addEventListener('webglcontextlost', this.handleContextLost)
+
+      controls = new OrbitControls(this.camera, renderer.domElement)
+      controls.dampingFactor = 0.06
+
+      this.renderer = renderer
+      this.controls = controls
+      this.updateMotionPreference()
+      this.reducedMotionQuery.addEventListener('change', this.updateMotionPreference)
+      this.container.appendChild(renderer.domElement)
+      return true
+    } catch (error) {
+      console.error('Unable to initialize the 3D preview renderer.', error)
+      try {
+        renderer?.domElement.removeEventListener('keydown', this.handleKeyDown)
+        renderer?.domElement.removeEventListener('webglcontextlost', this.handleContextLost)
+        controls?.dispose()
+        renderer?.dispose()
+      } catch (cleanupError) {
+        console.error('Unable to fully clean up the failed 3D preview renderer.', cleanupError)
+      } finally {
+        renderer?.domElement.remove()
+        this.controls = null
+        this.renderer = null
+      }
+      this.reducedMotionQuery.removeEventListener('change', this.updateMotionPreference)
+      this.showFallback('status')
+      return false
+    }
+  }
+
+  private handleContextLost = (event: Event): void => {
+    event.preventDefault()
+    console.error('The WebGL context was lost; the 3D preview has been disabled.')
+
+    cancelAnimationFrame(this.animationFrame)
+    this.resizeObserver?.disconnect()
+    this.resizeObserver = null
+    this.reducedMotionQuery.removeEventListener('change', this.updateMotionPreference)
+    this.desktopFramingQuery.removeEventListener('change', this.resize)
+    this.controls?.dispose()
+    this.controls = null
+
+    if (this.model) {
+      this.scene.remove(this.model)
+      this.disposeModel(this.model)
+      this.model = null
+    }
+    if (this.grid) {
+      this.scene.remove(this.grid)
+      this.grid.dispose()
+      this.grid = null
+    }
+    if (this.renderer) {
+      this.renderer.domElement.removeEventListener('keydown', this.handleKeyDown)
+      this.renderer.domElement.removeEventListener('webglcontextlost', this.handleContextLost)
+      this.renderer.dispose()
+      this.renderer.domElement.remove()
+      this.renderer = null
+    }
+
+    this.showFallback('alert')
+  }
+
+  private showFallback(role: 'status' | 'alert'): void {
+    if (this.disposed) return
+
+    if (!this.fallback) {
+      const fallback = document.createElement('div')
+      fallback.className = 'viewer-fallback'
+
+      const title = document.createElement('p')
+      title.className = 'viewer-fallback-title'
+      title.textContent = '3D preview unavailable'
+
+      const message = document.createElement('p')
+      message.className = 'viewer-fallback-message'
+      message.textContent =
+        'Your image can still be converted, and the 3D model can still be downloaded.'
+
+      fallback.append(title, message)
+      this.fallback = fallback
+    }
+
+    this.fallback.setAttribute('role', role)
+    this.fallback.setAttribute('aria-live', role === 'alert' ? 'assertive' : 'polite')
+    this.container.appendChild(this.fallback)
   }
 }

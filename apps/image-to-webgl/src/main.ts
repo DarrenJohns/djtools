@@ -60,16 +60,16 @@ app.innerHTML = `
           <input id="bevel-width" type="range" min="0" max="0.06" step="0.002" value="0.012">
         </label>
 
-        <label class="range-control" for="edge-color-blend">
-          <span>Color blend</span>
-          <output id="edge-color-blend-value" for="edge-color-blend">60%</output>
-          <input id="edge-color-blend" type="range" min="0" max="100" step="5" value="60">
-        </label>
-
         <label class="range-control" for="edge-curve">
           <span>Edge curve</span>
           <output id="edge-curve-value" for="edge-curve">55%</output>
           <input id="edge-curve" type="range" min="0" max="100" step="5" value="55">
+        </label>
+
+        <label class="range-control" for="edge-color-blend">
+          <span>Color blend</span>
+          <output id="edge-color-blend-value" for="edge-color-blend">60%</output>
+          <input id="edge-color-blend" type="range" min="0" max="100" step="5" value="60">
         </label>
       </div>
       <button
