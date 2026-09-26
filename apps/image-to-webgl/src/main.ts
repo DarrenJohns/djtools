@@ -14,7 +14,7 @@ app.innerHTML = `
     <section class="control-panel">
       <div>
         <p class="eyebrow">Local WebGL object lab</p>
-        <h1>Turn a transparent PNG into a WebGL object.</h1>
+        <h1>Transform PNG to WebGL object.</h1>
         <p class="intro">
           Trace the image silhouette, add real depth, preserve the artwork as a texture,
           and export a self-contained GLB. Everything runs locally in your browser.
@@ -76,9 +76,14 @@ app.innerHTML = `
         id="environment-toggle"
         class="environment-toggle"
         type="button"
+        role="switch"
+        aria-checked="false"
+        aria-label="Light environment"
+        data-environment="dark"
       >
-        <span class="environment-icon" aria-hidden="true">☀</span>
-        <span class="environment-label">Light environment</span>
+        <span class="environment-indicator" aria-hidden="true"></span>
+        <span class="environment-option environment-option-sun" aria-hidden="true">☀</span>
+        <span class="environment-option environment-option-moon" aria-hidden="true">☾</span>
       </button>
       <div id="viewer-hint" class="viewer-hint">
         Drag to orbit · Scroll to zoom · Right-drag to pan · Focus preview for keyboard controls
@@ -111,8 +116,6 @@ const downloadLink = requiredElement<HTMLAnchorElement>('#download-link')
 const viewerContainer = requiredElement<HTMLElement>('#viewer')
 const viewerPanel = requiredElement<HTMLElement>('.viewer-panel')
 const environmentToggle = requiredElement<HTMLButtonElement>('#environment-toggle')
-const environmentIcon = requiredElement<HTMLElement>('.environment-icon')
-const environmentLabel = requiredElement<HTMLElement>('.environment-label')
 
 const viewer = new ModelViewer(viewerContainer)
 let environment: 'dark' | 'light' = 'dark'
@@ -284,8 +287,7 @@ environmentToggle.addEventListener('click', () => {
   const isLight = environment === 'light'
   viewerPanel.dataset.environment = environment
   environmentToggle.dataset.environment = environment
-  environmentIcon.textContent = isLight ? '☾' : '☀'
-  environmentLabel.textContent = isLight ? 'Dark environment' : 'Light environment'
+  environmentToggle.setAttribute('aria-checked', String(isLight))
 })
 
 depthInput.setAttribute('aria-valuetext', `${depthInput.value} model units`)

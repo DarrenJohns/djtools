@@ -215,6 +215,95 @@ async function checkRuntimeContextLoss() {
   }
 }
 
+async function readThemePill(page) {
+  return page.locator('#environment-toggle').evaluate((toggle) => {
+    const box = (element) => element?.getBoundingClientRect().toJSON()
+    const style = getComputedStyle(toggle)
+    const indicator = toggle.querySelector('.environment-indicator')
+    const sun = toggle.querySelector('.environment-option-sun')
+    const moon = toggle.querySelector('.environment-option-moon')
+    return {
+      tagName: toggle.tagName,
+      type: toggle.getAttribute('type'),
+      role: toggle.getAttribute('role'),
+      label: toggle.getAttribute('aria-label'),
+      checked: toggle.getAttribute('aria-checked'),
+      pressed: toggle.getAttribute('aria-pressed'),
+      environment: toggle.getAttribute('data-environment'),
+      bounds: box(toggle),
+      backgroundImage: style.backgroundImage,
+      backdropFilter: style.backdropFilter,
+      webkitBackdropFilter: style.webkitBackdropFilter,
+      outlineStyle: style.outlineStyle,
+      outlineWidth: style.outlineWidth,
+      focusVisible: toggle.matches(':focus-visible'),
+      indicator: {
+        bounds: box(indicator),
+        transform: indicator ? getComputedStyle(indicator).transform : '',
+        transitionDuration: indicator ? getComputedStyle(indicator).transitionDuration : '',
+      },
+      sun: {
+        count: toggle.querySelectorAll('.environment-option-sun').length,
+        ariaHidden: sun?.getAttribute('aria-hidden'),
+        bounds: box(sun),
+      },
+      moon: {
+        count: toggle.querySelectorAll('.environment-option-moon').length,
+        ariaHidden: moon?.getAttribute('aria-hidden'),
+        bounds: box(moon),
+      },
+    }
+  })
+}
+
+function assertThemePillState(state, expectedChecked, label) {
+  const activeIcon = expectedChecked ? state.sun : state.moon
+  const indicatorCenter = state.indicator.bounds &&
+    state.indicator.bounds.x + state.indicator.bounds.width / 2
+  const activeIconCenter = activeIcon.bounds &&
+    activeIcon.bounds.x + activeIcon.bounds.width / 2
+  if (
+    state.tagName !== 'BUTTON' ||
+    state.type !== 'button' ||
+    state.role !== 'switch' ||
+    state.label !== 'Light environment' ||
+    state.checked !== String(expectedChecked) ||
+    state.pressed !== null ||
+    state.environment !== (expectedChecked ? 'light' : 'dark') ||
+    state.sun.count !== 1 ||
+    state.moon.count !== 1 ||
+    state.sun.ariaHidden !== 'true' ||
+    state.moon.ariaHidden !== 'true' ||
+    !state.bounds ||
+    state.bounds.width < 44 ||
+    state.bounds.height < 44 ||
+    !Number.isFinite(indicatorCenter) ||
+    !Number.isFinite(activeIconCenter) ||
+    Math.abs(indicatorCenter - activeIconCenter) > 2
+  ) {
+    throw new Error(`${label} theme pill state is invalid: ${JSON.stringify(state)}`)
+  }
+
+  const filter = `${state.backdropFilter} ${state.webkitBackdropFilter}`
+  if (
+    !state.backgroundImage.includes('linear-gradient') ||
+    !filter.includes('blur(18px)') ||
+    !filter.includes('saturate(1.45)') && !filter.includes('saturate(145%)')
+  ) {
+    throw new Error(`${label} theme pill is not frosted: ${JSON.stringify(state)}`)
+  }
+}
+
+function boxesOverlap(first, second) {
+  return (
+    first && second &&
+    first.x < second.x + second.width &&
+    first.x + first.width > second.x &&
+    first.y < second.y + second.height &&
+    first.y + first.height > second.y
+  )
+}
+
 async function readViewerLayout(page) {
   return page.evaluate(() => {
     const box = (selector) =>
@@ -242,6 +331,9 @@ async function readViewerLayout(page) {
       viewer: box('.viewer-panel'),
       canvas: box('#viewer canvas'),
       footer: box('.project-credit'),
+      environment: box('#environment-toggle'),
+      parameters: box('.parameter-bar'),
+      hint: box('.viewer-hint'),
       panelStyle: panelStyle && {
         backgroundColor: panelStyle.backgroundColor,
         backdropFilter: panelStyle.backdropFilter,
@@ -344,8 +436,18 @@ async function checkDesktopOverlay(viewport, { checkSpacing = false } = {}) {
     const label = `${viewport.width}x${viewport.height}`
     const layout = await readViewerLayout(page)
     assertDesktopFraming(layout, label)
-    if (layout.document.height > viewport.height + 1) {
-      throw new Error(`${label} desktop overlay unexpectedly scrolls.`)
+    if (
+      layout.document.width > viewport.width + 1 ||
+      layout.document.height > viewport.height + 1
+    ) {
+      throw new Error(`${label} desktop overlay unexpectedly overflows.`)
+    }
+    if (
+      boxesOverlap(layout.environment, layout.parameters) ||
+      boxesOverlap(layout.environment, layout.hint) ||
+      boxesOverlap(layout.parameters, layout.hint)
+    ) {
+      throw new Error(`${label} viewer overlays collide.`)
     }
     if (
       !layout.footer ||
@@ -662,13 +764,60 @@ try {
   if (transientUiState.statusShowedTracing) {
     throw new Error('The file metrics were replaced by a transient tracing message.')
   }
-  await page.locator('#environment-toggle').click()
-  if (await page.locator('#environment-toggle').getAttribute('aria-pressed') !== null) {
-    throw new Error('The environment action incorrectly exposes toggle-button semantics.')
+  const environmentToggle = page.locator('#environment-toggle')
+  const darkThemePill = await readThemePill(page)
+  assertThemePillState(darkThemePill, false, 'Initial dark')
+
+  await environmentToggle.focus()
+  await page.keyboard.press('Shift+Tab')
+  await page.keyboard.press('Tab')
+  const focusedThemePill = await readThemePill(page)
+  if (
+    !focusedThemePill.focusVisible ||
+    focusedThemePill.outlineStyle === 'none' ||
+    Number.parseFloat(focusedThemePill.outlineWidth) < 3
+  ) {
+    throw new Error(
+      `The theme pill has no visible keyboard focus: ${JSON.stringify(focusedThemePill)}`,
+    )
   }
-  if (await page.locator('.environment-label').textContent() !== 'Dark environment') {
-    throw new Error('The environment toggle label did not update.')
+
+  await page.keyboard.press('Space')
+  await page.waitForFunction(() => (
+    document.querySelector('#environment-toggle')?.getAttribute('aria-checked') === 'true'
+  ))
+  await page.waitForTimeout(250)
+  const lightThemePill = await readThemePill(page)
+  assertThemePillState(lightThemePill, true, 'Space-activated light')
+  if (
+    !darkThemePill.indicator.bounds ||
+    !lightThemePill.indicator.bounds ||
+    darkThemePill.indicator.bounds.x - lightThemePill.indicator.bounds.x < 24 ||
+    darkThemePill.indicator.transform === lightThemePill.indicator.transform
+  ) {
+    throw new Error('The theme pill indicator did not move to the sun.')
   }
+
+  await page.keyboard.press('Enter')
+  await page.waitForFunction(() => (
+    document.querySelector('#environment-toggle')?.getAttribute('aria-checked') === 'false'
+  ))
+  await page.waitForTimeout(250)
+  const restoredDarkThemePill = await readThemePill(page)
+  assertThemePillState(restoredDarkThemePill, false, 'Enter-restored dark')
+  if (
+    !darkThemePill.indicator.bounds ||
+    !restoredDarkThemePill.indicator.bounds ||
+    Math.abs(
+      darkThemePill.indicator.bounds.x - restoredDarkThemePill.indicator.bounds.x,
+    ) > 2
+  ) {
+    throw new Error('The theme pill indicator did not return to the moon.')
+  }
+
+  await environmentToggle.click()
+  await page.waitForTimeout(250)
+  assertThemePillState(await readThemePill(page), true, 'Pointer-activated light')
   if (await page.locator('.viewer-panel').getAttribute('data-environment') !== 'light') {
     throw new Error('The light environment was not applied to the viewer interface.')
   }
@@ -797,10 +946,14 @@ try {
   ))
   const reducedMotionStyles = await page.evaluate(() => ({
     buttonTransition: getComputedStyle(document.querySelector('#environment-toggle')).transitionDuration,
+    indicatorTransition: getComputedStyle(
+      document.querySelector('.environment-indicator'),
+    ).transitionDuration,
     downloadTransform: getComputedStyle(document.querySelector('#download-link')).transform,
   }))
   if (
     !['0.01ms', '1e-05s'].includes(reducedMotionStyles.buttonTransition) ||
+    !['0.01ms', '1e-05s'].includes(reducedMotionStyles.indicatorTransition) ||
     reducedMotionStyles.downloadTransform !== 'none'
   ) {
     throw new Error(`Reduced-motion styles were not applied: ${JSON.stringify(reducedMotionStyles)}`)
@@ -889,13 +1042,13 @@ try {
       const environmentBox = await mobilePage.locator('#environment-toggle').boundingBox()
       const parametersBox = await mobilePage.locator('.parameter-bar').boundingBox()
       const hintBox = await mobilePage.locator('.viewer-hint').boundingBox()
-      const boxesOverlap = (first, second) => (
-        first && second &&
-        first.x < second.x + second.width &&
-        first.x + first.width > second.x &&
-        first.y < second.y + second.height &&
-        first.y + first.height > second.y
-      )
+      if (
+        !environmentBox ||
+        environmentBox.width < 44 ||
+        environmentBox.height < 44
+      ) {
+        throw new Error(`${viewport.width}px theme pill target is smaller than 44px.`)
+      }
       if (
         boxesOverlap(environmentBox, parametersBox) ||
         boxesOverlap(environmentBox, hintBox) ||
