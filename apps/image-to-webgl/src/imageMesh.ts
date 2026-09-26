@@ -47,18 +47,30 @@ interface PreparedImage {
 const DEFAULT_TRACE_RESOLUTION = 640
 const DEFAULT_SIMPLIFY_TOLERANCE = 1.5
 const SMOOTHING_CREASE_ANGLE = Math.PI / 4
+const MAX_FILE_SIZE = 20 * 1024 * 1024
+const MAX_IMAGE_DIMENSION = 8192
+const MAX_IMAGE_PIXELS = 25_000_000
+const PNG_SIGNATURE = [137, 80, 78, 71, 13, 10, 26, 10]
 
-function validateFile(file: File): void {
-  if (file.type !== 'image/png') {
-    throw new Error('This prototype requires a PNG file with a transparent background.')
-  }
+export async function validatePngFile(file: File): Promise<void> {
   if (file.size === 0) {
     throw new Error('The selected PNG is empty.')
+  }
+  if (file.size > MAX_FILE_SIZE) {
+    throw new Error('The selected PNG is larger than the 20 MB limit.')
+  }
+
+  const signature = new Uint8Array(await file.slice(0, PNG_SIGNATURE.length).arrayBuffer())
+  if (
+    signature.length !== PNG_SIGNATURE.length ||
+    !PNG_SIGNATURE.every((value, index) => signature[index] === value)
+  ) {
+    throw new Error('The selected file is not a valid PNG.')
   }
 }
 
 async function prepareImage(file: File, traceResolution: number): Promise<PreparedImage> {
-  validateFile(file)
+  await validatePngFile(file)
 
   let bitmap: ImageBitmap
   try {
@@ -71,6 +83,12 @@ async function prepareImage(file: File, traceResolution: number): Promise<Prepar
     const longestSide = Math.max(bitmap.width, bitmap.height)
     if (longestSide === 0) {
       throw new Error('The selected PNG has invalid dimensions.')
+    }
+    if (
+      longestSide > MAX_IMAGE_DIMENSION ||
+      bitmap.width * bitmap.height > MAX_IMAGE_PIXELS
+    ) {
+      throw new Error('The selected PNG dimensions are too large. Use at most 25 megapixels and 8192 pixels per side.')
     }
 
     const textureScale = Math.min(1, 2048 / longestSide)
@@ -119,6 +137,22 @@ export function alphaMaskFromImageData(imageData: ImageData, threshold: number):
   }
   if (filledPixels === mask.length) {
     throw new Error('The PNG has no transparent background to define a silhouette.')
+  }
+  const hasTransparentBoundary = (() => {
+    for (let x = 0; x < imageData.width; x += 1) {
+      if (mask[x] === 0 || mask[(imageData.height - 1) * imageData.width + x] === 0) {
+        return true
+      }
+    }
+    for (let y = 0; y < imageData.height; y += 1) {
+      if (mask[y * imageData.width] === 0 || mask[y * imageData.width + imageData.width - 1] === 0) {
+        return true
+      }
+    }
+    return false
+  })()
+  if (!hasTransparentBoundary) {
+    throw new Error('The PNG background must be transparent around the outside edge.')
   }
   return mask
 }

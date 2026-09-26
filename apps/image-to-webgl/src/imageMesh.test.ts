@@ -3,14 +3,15 @@ import {
   alphaMaskFromImageData,
   dilateOpaqueColors,
   formatFileSize,
+  validatePngFile,
 } from './imageMesh.ts'
 
-function imageDataWithAlpha(alpha: number[]): ImageData {
+function imageDataWithAlpha(alpha: number[], width = alpha.length): ImageData {
   const data = new Uint8ClampedArray(alpha.length * 4)
   alpha.forEach((value, index) => {
     data[index * 4 + 3] = value
   })
-  return { data, width: alpha.length, height: 1, colorSpace: 'srgb' } as ImageData
+  return { data, width, height: alpha.length / width, colorSpace: 'srgb' } as ImageData
 }
 
 describe('alphaMaskFromImageData', () => {
@@ -76,5 +77,35 @@ describe('alphaMaskFromImageData', () => {
   it('rejects an invalid threshold', () => {
     expect(() => alphaMaskFromImageData(imageDataWithAlpha([0, 255]), 256))
       .toThrow(/between 0 and 255/)
+  })
+
+  it('rejects transparency that does not reach the image boundary', () => {
+    expect(() => alphaMaskFromImageData(imageDataWithAlpha([
+      255, 255, 255,
+      255, 0, 255,
+      255, 255, 255,
+    ], 3), 16)).toThrow(/outside edge/)
+  })
+})
+
+describe('validatePngFile', () => {
+  it('accepts a file with the PNG signature', async () => {
+    const file = new File(
+      [new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 0])],
+      'sample.png',
+      { type: 'image/png' },
+    )
+
+    await expect(validatePngFile(file)).resolves.toBeUndefined()
+  })
+
+  it('rejects a renamed non-PNG file', async () => {
+    const file = new File(
+      [new Uint8Array([255, 216, 255, 224, 0, 16, 74, 70])],
+      'renamed.png',
+      { type: 'image/png' },
+    )
+
+    await expect(validatePngFile(file)).rejects.toThrow(/not a valid PNG/)
   })
 })

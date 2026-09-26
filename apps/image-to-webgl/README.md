@@ -28,8 +28,8 @@ npm run dev
 
 From the repository root, run `npm run dev` and open the URL shown by Vite. The
 included original prism-ring sample converts automatically. Select another PNG,
-adjust the extrusion depth and edge width, choose **Update**, and use
-**Download GLB** to save the result. Edge surfaces use the source artwork as a
+or drag one onto the source drop zone, then adjust the extrusion depth and edge controls. The model updates automatically
+when a slider is released without resetting the current camera angle or zoom. Use **Download GLB** to save the result. Edge surfaces use the source artwork as a
 projected texture, so gradients follow the face colors around the silhouette. The
 **Edge color blend** control softens transitions between colors on those surfaces
 without blurring the original face artwork. **Edge curve** controls the number of
@@ -70,8 +70,10 @@ The prototype deliberately uses a narrow, reliable input contract:
 - Simple artwork or objects suitable for shallow extrusion
 
 Invalid files, fully transparent images, and images without a transparent background
-produce an explicit error. JPEG and complex-background segmentation are not included
-in this phase.
+produce an explicit error. Validation checks the PNG file signature, a 20 MB file-size
+limit, decoded dimensions of at most 8192 pixels per side and 25 megapixels, visible
+content, and transparency reaching the outside boundary. JPEG and complex-background
+segmentation are not included in this phase.
 
 ## Local tooling assessment
 

@@ -62,7 +62,10 @@ export class ModelViewer {
     this.animate()
   }
 
-  async loadGlb(glb: ArrayBuffer): Promise<void> {
+  async loadGlb(
+    glb: ArrayBuffer,
+    { preserveView = false }: { preserveView?: boolean } = {},
+  ): Promise<void> {
     const loader = new GLTFLoader()
     let loaded: Group
     try {
@@ -88,11 +91,13 @@ export class ModelViewer {
     const size = bounds.getSize(new Vector3())
     loaded.position.sub(center)
     const extent = Math.max(size.x, size.y, size.z)
-    this.camera.position.set(extent * 1.4, extent * 0.9, extent * 1.8)
     this.camera.near = Math.max(0.001, extent / 100)
     this.camera.far = extent * 100
     this.camera.updateProjectionMatrix()
-    this.controls.target.set(0, 0, 0)
+    if (!preserveView) {
+      this.camera.position.set(extent * 1.4, extent * 0.9, extent * 1.8)
+      this.controls.target.set(0, 0, 0)
+    }
     this.controls.update()
   }
 

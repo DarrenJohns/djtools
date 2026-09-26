@@ -21,13 +21,33 @@ app.innerHTML = `
         </p>
       </div>
 
-      <form id="converter-form">
-        <label class="file-picker">
-          <span>Source PNG</span>
+      <div class="source-actions">
+        <label id="file-drop-zone" class="file-drop-zone">
           <input id="source-file" type="file" accept="image/png,.png">
-          <strong id="file-name">Prism ring sample</strong>
+          <span class="drop-copy">
+            <strong>Open or drop PNG here</strong>
+            <small id="file-name">prism-ring.png</small>
+          </span>
         </label>
+      </div>
 
+      <div class="file-details">
+        <a id="download-link" class="download-link" aria-disabled="true">Download GLB</a>
+        <div id="status" class="status" role="status" aria-live="polite"></div>
+      </div>
+
+      <footer class="project-credit">
+        <span>Brought to you by</span>
+        <a href="https://github.com/DarrenJohns/djtools" target="_blank" rel="noreferrer">
+          DJ Tools
+        </a>
+        <span class="version">v0.0.1</span>
+      </footer>
+    </section>
+
+    <section class="viewer-panel" data-environment="dark" aria-label="Interactive 3D preview">
+      <div id="viewer"></div>
+      <div class="parameter-bar" aria-label="Object settings">
         <label class="range-control" for="depth">
           <span>Extrusion depth</span>
           <output id="depth-value" for="depth">0.12</output>
@@ -41,7 +61,7 @@ app.innerHTML = `
         </label>
 
         <label class="range-control" for="edge-color-blend">
-          <span>Edge color blend</span>
+          <span>Color blend</span>
           <output id="edge-color-blend-value" for="edge-color-blend">60%</output>
           <input id="edge-color-blend" type="range" min="0" max="100" step="5" value="60">
         </label>
@@ -51,33 +71,7 @@ app.innerHTML = `
           <output id="edge-curve-value" for="edge-curve">55%</output>
           <input id="edge-curve" type="range" min="0" max="100" step="5" value="55">
         </label>
-
-        <button id="convert-button" type="submit">Update</button>
-      </form>
-
-      <div id="status" class="status" role="status" aria-live="polite">
-        Loading the local sample...
       </div>
-
-      <a id="download-link" class="download-link" hidden>Download GLB</a>
-
-      <aside class="scope-note">
-        <strong>Prototype boundary</strong>
-        <span>Designed for PNG artwork with a transparent background. It extrudes a reliable
-          silhouette; it does not guess the hidden sides of a photographed object.</span>
-      </aside>
-
-      <footer class="project-credit">
-        <span>Brought to you by</span>
-        <a href="https://github.com/DarrenJohns/djtools" target="_blank" rel="noreferrer">
-          DJ Tools
-        </a>
-        <span class="version">v0.0.1</span>
-      </footer>
-    </section>
-
-    <section class="viewer-panel" aria-label="Interactive 3D preview">
-      <div id="viewer"></div>
       <button
         id="environment-toggle"
         class="environment-toggle"
@@ -100,9 +94,9 @@ function requiredElement<T extends Element>(selector: string): T {
   return element
 }
 
-const form = requiredElement<HTMLFormElement>('#converter-form')
 const fileInput = requiredElement<HTMLInputElement>('#source-file')
 const fileName = requiredElement<HTMLElement>('#file-name')
+const fileDropZone = requiredElement<HTMLElement>('#file-drop-zone')
 const depthInput = requiredElement<HTMLInputElement>('#depth')
 const depthValue = requiredElement<HTMLOutputElement>('#depth-value')
 const bevelWidthInput = requiredElement<HTMLInputElement>('#bevel-width')
@@ -111,10 +105,10 @@ const edgeColorBlendInput = requiredElement<HTMLInputElement>('#edge-color-blend
 const edgeColorBlendValue = requiredElement<HTMLOutputElement>('#edge-color-blend-value')
 const edgeCurveInput = requiredElement<HTMLInputElement>('#edge-curve')
 const edgeCurveValue = requiredElement<HTMLOutputElement>('#edge-curve-value')
-const convertButton = requiredElement<HTMLButtonElement>('#convert-button')
 const status = requiredElement<HTMLElement>('#status')
 const downloadLink = requiredElement<HTMLAnchorElement>('#download-link')
 const viewerContainer = requiredElement<HTMLElement>('#viewer')
+const viewerPanel = requiredElement<HTMLElement>('.viewer-panel')
 const environmentToggle = requiredElement<HTMLButtonElement>('#environment-toggle')
 const environmentIcon = requiredElement<HTMLElement>('.environment-icon')
 const environmentLabel = requiredElement<HTMLElement>('.environment-label')
@@ -123,6 +117,8 @@ const viewer = new ModelViewer(viewerContainer)
 let environment: 'dark' | 'light' = 'dark'
 let sourceFile: File | null = null
 let result: ConversionResult | null = null
+let conversionRequest = 0
+let conversionTimer: number | undefined
 
 function setStatus(message: string, kind: 'working' | 'success' | 'error' = 'working'): void {
   status.textContent = message
@@ -132,7 +128,10 @@ function setStatus(message: string, kind: 'working' | 'success' | 'error' = 'wor
 function setSourceFile(file: File): void {
   sourceFile = file
   fileName.textContent = file.name
-  downloadLink.hidden = true
+  downloadLink.removeAttribute('href')
+  downloadLink.removeAttribute('download')
+  downloadLink.setAttribute('aria-disabled', 'true')
+  delete fileDropZone.dataset.state
 }
 
 async function loadSample(): Promise<void> {
@@ -143,50 +142,104 @@ async function loadSample(): Promise<void> {
     }
     const blob = await response.blob()
     setSourceFile(new File([blob], 'prism-ring.png', { type: 'image/png' }))
-    await convert()
+    conversionRequest += 1
+    await convert(conversionRequest, false)
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unknown sample loading error.'
     setStatus(`Could not load the sample: ${message}`, 'error')
   }
 }
 
-async function convert(): Promise<void> {
+async function convert(request: number, preserveView: boolean): Promise<void> {
   if (!sourceFile) {
     setStatus('Choose a transparent PNG before building the asset.', 'error')
     return
   }
 
-  convertButton.disabled = true
-  downloadLink.hidden = true
-  setStatus('Tracing silhouette and building GLB...', 'working')
+  status.setAttribute('aria-busy', 'true')
 
   try {
-    if (result) URL.revokeObjectURL(result.previewUrl)
-    result = await convertImageToGlb(sourceFile, {
+    const converted = await convertImageToGlb(sourceFile, {
       depth: Number(depthInput.value),
       bevelWidth: Number(bevelWidthInput.value),
       edgeColorBlend: Number(edgeColorBlendInput.value) / 100,
       edgeCurve: Number(edgeCurveInput.value) / 100,
     })
-    await viewer.loadGlb(result.glb)
+    if (request !== conversionRequest) {
+      URL.revokeObjectURL(converted.previewUrl)
+      return
+    }
+
+    await viewer.loadGlb(converted.glb, { preserveView })
+    const previousResult = result
+    result = converted
     downloadLink.href = result.previewUrl
     downloadLink.download = `${sourceFile.name.replace(/\.png$/i, '')}.glb`
-    downloadLink.hidden = false
+    downloadLink.removeAttribute('aria-disabled')
+    if (previousResult) URL.revokeObjectURL(previousResult.previewUrl)
+    fileDropZone.dataset.state = 'success'
     setStatus(
       `${result.contourCount} contours · ${Math.round(result.triangleCount).toLocaleString()} tris · ${formatFileSize(result.glb.byteLength)} GLB`,
       'success',
     )
   } catch (error) {
+    if (request !== conversionRequest) return
     const message = error instanceof Error ? error.message : 'Unknown conversion error.'
+    fileDropZone.dataset.state = 'error'
     setStatus(message, 'error')
   } finally {
-    convertButton.disabled = false
+    if (request === conversionRequest) {
+      status.removeAttribute('aria-busy')
+    }
   }
+}
+
+function scheduleConversion(preserveView: boolean): void {
+  conversionRequest += 1
+  const request = conversionRequest
+  window.clearTimeout(conversionTimer)
+  conversionTimer = window.setTimeout(() => void convert(request, preserveView), 150)
 }
 
 fileInput.addEventListener('change', () => {
   const file = fileInput.files?.[0]
-  if (file) setSourceFile(file)
+  if (file) {
+    setSourceFile(file)
+    scheduleConversion(false)
+  }
+})
+
+const preventFileDragDefaults = (event: DragEvent): void => {
+  event.preventDefault()
+  event.stopPropagation()
+}
+
+fileDropZone.addEventListener('dragenter', (event) => {
+  preventFileDragDefaults(event)
+  fileDropZone.dataset.dragging = 'true'
+})
+
+fileDropZone.addEventListener('dragover', (event) => {
+  preventFileDragDefaults(event)
+  fileDropZone.dataset.dragging = 'true'
+})
+
+fileDropZone.addEventListener('dragleave', (event) => {
+  preventFileDragDefaults(event)
+  if (event.relatedTarget instanceof Node && fileDropZone.contains(event.relatedTarget)) return
+  delete fileDropZone.dataset.dragging
+})
+
+fileDropZone.addEventListener('drop', (event) => {
+  preventFileDragDefaults(event)
+  delete fileDropZone.dataset.dragging
+  const file = event.dataTransfer?.files[0]
+  if (!file) {
+    setStatus('Drop one transparent PNG file here.', 'error')
+    return
+  }
+  setSourceFile(file)
+  scheduleConversion(false)
 })
 
 depthInput.addEventListener('input', () => {
@@ -205,15 +258,22 @@ edgeCurveInput.addEventListener('input', () => {
   edgeCurveValue.value = `${edgeCurveInput.value}%`
 })
 
-form.addEventListener('submit', (event) => {
-  event.preventDefault()
-  void convert()
+const conversionInputs = [depthInput, bevelWidthInput, edgeColorBlendInput, edgeCurveInput]
+conversionInputs.forEach((input) => {
+  input.addEventListener('change', () => scheduleConversion(true))
+})
+
+downloadLink.addEventListener('click', (event) => {
+  if (downloadLink.getAttribute('aria-disabled') === 'true') {
+    event.preventDefault()
+  }
 })
 
 environmentToggle.addEventListener('click', () => {
   environment = environment === 'dark' ? 'light' : 'dark'
   viewer.setEnvironment(environment)
   const isLight = environment === 'light'
+  viewerPanel.dataset.environment = environment
   environmentToggle.setAttribute('aria-pressed', String(isLight))
   environmentToggle.dataset.environment = environment
   environmentIcon.textContent = isLight ? '☾' : '☀'
