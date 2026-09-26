@@ -9,12 +9,16 @@ Reusable browser-based tools that run locally on the user's device.
 Convert transparent PNG artwork into a textured, extruded 3D object, preview it
 interactively with Three.js, and download it as a self-contained GLB.
 
+- Use online: [Image to WebGL](https://darrenjohns.github.io/djtools/image-to-webgl/)
 - Source: [`apps/image-to-webgl`](./apps/image-to-webgl)
 - No image uploads or hosted conversion service
 - Adjustable depth, edge width, color blending, and curvature
 - Light and dark preview environments
 
-## Development
+## Contributor setup
+
+The public tools run in the browser and do not require npm. The following commands
+are for contributors who want to run or modify the source locally.
 
 Requirements:
 
@@ -45,18 +49,11 @@ npm run test:browser
 
 ## GitHub Pages
 
-The repository includes a Pages workflow that publishes a tool catalog at the site
-root and each app under its own path. It runs from `main` and remains inactive until
-this local work is committed and pushed and GitHub Pages is configured to use
-**GitHub Actions** as its source.
+The repository's GitHub Pages workflow publishes the tool catalog and applications
+from `main`.
 
-The planned public URL is:
-
-`https://darrenjohns.github.io/djtools/`
-
-The first tool will be available at:
-
-`https://darrenjohns.github.io/djtools/image-to-webgl/`
+- [DJ Tools catalog](https://darrenjohns.github.io/djtools/)
+- [Image to WebGL](https://darrenjohns.github.io/djtools/image-to-webgl/)
 
 ## Adding another tool
 

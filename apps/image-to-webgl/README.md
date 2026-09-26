@@ -1,48 +1,80 @@
-# Local PNG-to-3D WebGL prototype
+# Image to WebGL
 
-This proof of concept converts transparent PNG artwork into a shallow 3D mesh, exports
-it as a self-contained GLB, and reloads the GLB into an interactive Three.js viewer.
-Conversion and rendering happen locally in the browser.
+Convert transparent PNG artwork into a textured, extruded 3D object directly in
+your browser. Preview the result interactively and download it as a self-contained
+GLB file.
 
-## What it proves
+## Use online
 
-- A transparent image silhouette can become real, rotatable geometry without a hosted
-  AI service.
-- Transparent holes are retained as mesh holes.
-- The original artwork can be preserved on the front and rear faces while a generated
-  material covers the extruded sides.
-- Creased vertex normals smooth small traced edge segments while retaining intentional
-  sharp corners in the artwork.
-- The generated asset can be exported in GLB, the preferred compact format for a
-  Three.js/WebGL game.
+[Open Image to WebGL](https://darrenjohns.github.io/djtools/image-to-webgl/)
 
-This is controlled 2.5D extrusion, not full single-view 3D reconstruction. A source
-photo does not contain enough information to recover accurate hidden surfaces.
+No installation, account, or image upload is required. Conversion runs locally on
+your device.
 
-## Run locally
+## How to use it
+
+1. Open or drop a transparent PNG into the upload area.
+2. Adjust the object settings:
+   - **Extrusion depth** controls the overall thickness.
+   - **Edge width** controls the size of the bevel.
+   - **Edge curve** changes the bevel from angular to smoothly rounded.
+   - **Color blend** softens color transitions around the bevel and sides without
+     blurring the original front and rear artwork.
+3. Drag to orbit, scroll to zoom, or right-drag to pan the generated object.
+4. Use the sun/moon switch to inspect it in light and dark environments.
+5. Select **Download GLB** to save the generated 3D asset.
+
+The preview reloads the generated GLB, so it represents the file that will be
+downloaded. The status beside the Download button reports the contour count,
+triangle count, and GLB file size.
+
+## What it creates
+
+Image to WebGL traces the PNG's transparent silhouette and turns it into shallow
+3D geometry:
+
+- Transparent holes remain holes in the mesh.
+- Disconnected visible regions become separate solids in the same GLB.
+- The original artwork is preserved on the front and rear faces.
+- Projected source colors continue around the bevel and sides.
+- Planar face normals keep flat artwork evenly lit while bevels remain smooth.
+
+This is deterministic 2.5D extrusion, not AI-based single-image reconstruction.
+It does not infer hidden surfaces from photographs.
+
+## Supported input
+
+- PNG format
+- A transparent background that reaches the outside image boundary
+- Visible artwork suitable for silhouette-based extrusion
+- Up to 20 MB
+- Up to 8192 pixels per side and 25 megapixels
+
+The app reports an explicit error for invalid files, fully transparent images,
+fully opaque images, oversized images, and artwork without a traceable silhouette.
+JPEG background removal is not currently included.
+
+## Developer setup
+
+The following npm commands are only for contributors who want to run or modify the
+source code. They are not required to use the online tool.
+
+Requirements:
+
+- Node.js 22.12 or newer
+- npm
+- Microsoft Edge for the browser smoke test
+
+From the repository root:
 
 ```powershell
 npm install
 npm run dev
 ```
 
-From the repository root, run `npm run dev` and open the URL shown by Vite. The
-included original prism-ring sample converts automatically. Select another PNG,
-or drag one onto the source drop zone, then adjust the extrusion depth and edge controls. The model updates automatically
-when a slider is released without resetting the current camera angle or zoom. Use **Download GLB** to save the result. Edge surfaces use the source artwork as a
-projected texture, so gradients follow the face colors around the silhouette. The
-**Edge color blend** control softens transitions between colors on those surfaces
-without blurring the original face artwork. **Edge curve** controls the number of
-bevel subdivisions, from a more angular transition to a smoothly rounded edge.
-The face and bevel share one continuous projected material to avoid a visible seam
-where those surfaces meet.
+Open the local URL shown by Vite.
 
-Use the viewer's **Light environment** / **Dark environment** toggle to inspect the
-object against contrasting backgrounds and illumination without regenerating it.
-The success status reports contour count, triangle count, and the generated GLB's
-download size.
-
-## Validate
+Validation:
 
 ```powershell
 npm run typecheck
@@ -50,45 +82,13 @@ npm test
 npm run build
 ```
 
-The browser smoke test requires the Vite development server to be running in another
-terminal:
+With the development server running in another terminal:
 
 ```powershell
 npm run test:browser
 ```
 
-It launches the locally installed Microsoft Edge, waits for the bundled sample to
-convert, checks the GLB preview and download controls, and verifies the WebGL canvas.
-Set `EDGE_PATH` if Edge is installed somewhere other than its standard Windows paths.
-
-## Supported input
-
-The prototype deliberately uses a narrow, reliable input contract:
-
-- PNG format
-- A transparent background that clearly defines the outer silhouette
-- Simple artwork or objects suitable for shallow extrusion
-
-Invalid files, fully transparent images, and images without a transparent background
-produce an explicit error. Validation checks the PNG file signature, a 20 MB file-size
-limit, decoded dimensions of at most 8192 pixels per side and 25 megapixels, visible
-content, and transparency reaching the outside boundary. JPEG and complex-background
-segmentation are not included in this phase.
-
-## Local tooling assessment
-
-The current implementation needs only Node.js, npm, Microsoft Edge, and the declared
-project dependencies. The installed Three.js development skill supplies relevant
-scene, material, glTF, and performance guidance.
-
-Blender is optional for this workflow. Install it when manual mesh inspection, UV
-editing, decimation, or artist-driven cleanup becomes useful. It is not required to
-run this converter.
-
-Possible later additions:
-
-- Background removal for JPEG and ordinary photographs
-- KTX2 textures and mesh compression for production game delivery
-- glTF validation and optimization in the asset pipeline
-- Local AI reconstruction for assets that require inferred geometry on hidden sides
-- Blender-based manual review and cleanup
+The browser test launches the locally installed Microsoft Edge and checks
+conversion, GLB export and reload, viewer interaction, responsive layouts,
+accessibility, WebGL fallback behavior, and generated geometry normals. Set
+`EDGE_PATH` if Edge is installed outside its standard Windows locations.
