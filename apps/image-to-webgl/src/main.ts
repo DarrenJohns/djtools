@@ -41,7 +41,7 @@ app.innerHTML = `
         <a href="https://github.com/DarrenJohns/djtools" target="_blank" rel="noreferrer">
           DJ Tools
         </a>
-        <span class="version">v0.0.1</span>
+        <span class="version">v0.0.2</span>
       </footer>
     </section>
 

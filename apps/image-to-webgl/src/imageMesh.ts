@@ -6,6 +6,7 @@ import {
   MeshStandardMaterial,
   SRGBColorSpace,
   Vector2,
+  type BufferGeometry,
   type ExtrudeGeometryOptions,
 } from 'three'
 import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js'
@@ -290,6 +291,105 @@ function createUvGenerator(width: number, height: number): NonNullable<ExtrudeGe
   }
 }
 
+export function correctExtrudeCapNormals(geometry: BufferGeometry): void {
+  if (geometry.index !== null) {
+    throw new Error('Cap normals can only be corrected on non-indexed geometry.')
+  }
+
+  const position = geometry.getAttribute('position')
+  if (!position || position.itemSize !== 3 || position.count === 0 || position.count % 3 !== 0) {
+    throw new Error('Cap normal correction requires valid triangle position data.')
+  }
+
+  const normal = geometry.getAttribute('normal')
+  if (
+    !normal ||
+    normal.itemSize !== 3 ||
+    normal.count !== position.count ||
+    normal.normalized
+  ) {
+    throw new Error('Cap normal correction requires valid, non-normalized vertex normals.')
+  }
+
+  if (geometry.groups.length === 0) {
+    throw new Error('Cap normal correction requires ExtrudeGeometry material groups.')
+  }
+
+  const coveredVertices = new Uint8Array(position.count)
+  let capGroupCount = 0
+  let sideGroupCount = 0
+
+  for (const group of geometry.groups) {
+    const { start, count, materialIndex } = group
+    if (
+      !Number.isSafeInteger(start) ||
+      !Number.isSafeInteger(count) ||
+      start < 0 ||
+      count <= 0 ||
+      start % 3 !== 0 ||
+      count % 3 !== 0 ||
+      start + count > position.count
+    ) {
+      throw new Error('ExtrudeGeometry contains an invalid material group range.')
+    }
+    if (materialIndex !== 0 && materialIndex !== 1) {
+      throw new Error('ExtrudeGeometry groups must use material index 0 for caps or 1 for sides.')
+    }
+
+    if (materialIndex === 0) capGroupCount += 1
+    else sideGroupCount += 1
+
+    for (let vertexIndex = start; vertexIndex < start + count; vertexIndex += 1) {
+      if (coveredVertices[vertexIndex] !== 0) {
+        throw new Error('ExtrudeGeometry material groups must not overlap.')
+      }
+      coveredVertices[vertexIndex] = 1
+    }
+  }
+
+  if (capGroupCount === 0 || sideGroupCount === 0) {
+    throw new Error('ExtrudeGeometry must contain both cap and side material groups.')
+  }
+  if (coveredVertices.some((value) => value === 0)) {
+    throw new Error('ExtrudeGeometry material groups must cover every vertex.')
+  }
+
+  for (let vertexIndex = 0; vertexIndex < normal.count; vertexIndex += 1) {
+    const x = normal.getX(vertexIndex)
+    const y = normal.getY(vertexIndex)
+    const z = normal.getZ(vertexIndex)
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
+      throw new Error('ExtrudeGeometry contains an invalid vertex normal.')
+    }
+  }
+
+  for (const group of geometry.groups) {
+    if (group.materialIndex !== 0) continue
+    for (
+      let vertexIndex = group.start;
+      vertexIndex < group.start + group.count;
+      vertexIndex += 1
+    ) {
+      if (normal.getZ(vertexIndex) === 0) {
+        throw new Error('A cap vertex normal has no front/back orientation.')
+      }
+    }
+  }
+
+  for (const group of geometry.groups) {
+    if (group.materialIndex !== 0) continue
+    for (
+      let vertexIndex = group.start;
+      vertexIndex < group.start + group.count;
+      vertexIndex += 1
+    ) {
+      const z = normal.getZ(vertexIndex)
+      normal.setXYZ(vertexIndex, 0, 0, z > 0 ? 1 : -1)
+    }
+  }
+  normal.needsUpdate = true
+}
+
 async function exportGlb(object: Group): Promise<ArrayBuffer> {
   const exporter = new GLTFExporter()
   const result = await exporter.parseAsync(object, {
@@ -358,8 +458,16 @@ export async function convertImageToGlb(
     steps: 1,
     UVGenerator: createUvGenerator(width, height),
   })
-  const geometry = toCreasedNormals(extrudedGeometry, SMOOTHING_CREASE_ANGLE)
-  extrudedGeometry.dispose()
+  let geometry: BufferGeometry | undefined
+  try {
+    geometry = toCreasedNormals(extrudedGeometry, SMOOTHING_CREASE_ANGLE)
+    correctExtrudeCapNormals(geometry)
+  } catch (error) {
+    if (geometry && geometry !== extrudedGeometry) geometry.dispose()
+    extrudedGeometry.dispose()
+    throw error
+  }
+  if (geometry !== extrudedGeometry) extrudedGeometry.dispose()
   geometry.translate(-width / 2, -height / 2, -options.depth / 2)
   geometry.computeBoundingBox()
   geometry.computeBoundingSphere()

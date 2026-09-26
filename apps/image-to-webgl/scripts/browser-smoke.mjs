@@ -1,4 +1,6 @@
 import { access } from 'node:fs/promises'
+import { mkdir, writeFile } from 'node:fs/promises'
+import path from 'node:path'
 import process from 'node:process'
 import { chromium } from 'playwright-core'
 
@@ -214,6 +216,139 @@ async function checkRuntimeContextLoss() {
     await context.close()
   }
 }
+
+async function checkConcaveFaceShading() {
+  const context = await browser.newContext({ viewport: { width: 1440, height: 960 } })
+  try {
+    const page = await context.newPage()
+    const diagnostics = collectDiagnostics(page)
+    await page.goto(baseUrl, { waitUntil: 'networkidle' })
+    await waitForSuccessfulConversion(page)
+
+    const fixtureBase64 = await page.evaluate(async () => {
+      const canvas = document.createElement('canvas')
+      canvas.width = 128
+      canvas.height = 96
+      const context = canvas.getContext('2d')
+      if (!context) throw new Error('Could not generate the concave PNG fixture.')
+      context.clearRect(0, 0, canvas.width, canvas.height)
+      context.fillStyle = 'rgb(217, 58, 84)'
+      context.fillRect(12, 12, 18, 65)
+      context.fillRect(30, 58, 36, 19)
+      context.fillRect(82, 18, 24, 24)
+
+      const blob = await new Promise((resolve, reject) => {
+        canvas.toBlob(
+          (value) => value ? resolve(value) : reject(new Error('PNG encoding failed.')),
+          'image/png',
+        )
+      })
+      const bytes = new Uint8Array(await blob.arrayBuffer())
+      let binary = ''
+      for (const byte of bytes) binary += String.fromCharCode(byte)
+
+      const transfer = new DataTransfer()
+      transfer.items.add(new File([blob], 'solid-concave-shapes.png', {
+        type: 'image/png',
+      }))
+      document.querySelector('#file-drop-zone')?.dispatchEvent(new DragEvent('drop', {
+        bubbles: true,
+        cancelable: true,
+        dataTransfer: transfer,
+      }))
+      return btoa(binary)
+    })
+
+    await page.waitForFunction(() => (
+      document.querySelector('#file-name')?.textContent === 'solid-concave-shapes.png' &&
+      document.querySelector('#file-drop-zone')?.dataset.state === 'success' &&
+      document.querySelector('#status')?.dataset.kind === 'success'
+    ), undefined, { timeout: 60_000 })
+
+    const status = await page.locator('#status').textContent()
+    const metricMatch = status?.match(/^(\d+) contours · ([\d,]+) tris · /)
+    if (!metricMatch || Number(metricMatch[1]) !== 2 || Number(metricMatch[2].replaceAll(',', '')) <= 0) {
+      throw new Error(`Concave fixture has invalid contour/triangle metrics: ${status}`)
+    }
+
+    const glbDiagnostics = await page.evaluate(async () => {
+      const href = document.querySelector('#download-link')?.getAttribute('href')
+      if (!href) throw new Error('Concave fixture has no downloadable GLB.')
+      const glb = await (await fetch(href)).arrayBuffer()
+      const { inspectExportedGlb } = await import('/scripts/glb-diagnostics.ts')
+      return inspectExportedGlb(glb, [
+        { x: 20, y: 24 },
+        { x: 20, y: 65 },
+        { x: 92, y: 28 },
+      ], { width: 128, height: 96 })
+    })
+    if (
+      glbDiagnostics.capTriangles < 4 ||
+      glbDiagnostics.sideTriangles < 4 ||
+      glbDiagnostics.capVertices !== glbDiagnostics.capTriangles * 3 ||
+      glbDiagnostics.sideVertices !== glbDiagnostics.sideTriangles * 3
+    ) {
+      throw new Error(`GLB cap/side classification is invalid: ${JSON.stringify(glbDiagnostics)}`)
+    }
+    if (
+      glbDiagnostics.sideDirectionCount < 12 ||
+      glbDiagnostics.sideMinZ >= -0.05 ||
+      glbDiagnostics.sideMaxZ <= 0.05
+    ) {
+      throw new Error(`Reloaded bevel normals are not smoothly varied: ${JSON.stringify(glbDiagnostics)}`)
+    }
+    for (const sample of glbDiagnostics.sampledPixels) {
+      if (sample.rgba.join(',') !== '217,58,84,255') {
+        throw new Error(`Opaque cap texture RGB changed at ${sample.x},${sample.y}: ${sample.rgba}`)
+      }
+    }
+
+    await assertDownloadUsable(page, 'Concave face-shading fixture')
+    const canvasBounds = await page.locator('#viewer canvas').boundingBox()
+    if (!canvasBounds) throw new Error('Concave fixture has no WebGL canvas.')
+    const start = {
+      x: canvasBounds.x + canvasBounds.width * 0.68,
+      y: canvasBounds.y + canvasBounds.height * 0.56,
+    }
+    await page.mouse.move(start.x, start.y)
+    await page.mouse.down()
+    await page.mouse.move(start.x + 155, start.y - 60, { steps: 12 })
+    await page.mouse.up()
+    await page.waitForTimeout(350)
+
+    if (process.env.ARTIFACT_DIR) {
+      const artifactDirectory = path.resolve(process.env.ARTIFACT_DIR)
+      await mkdir(artifactDirectory, { recursive: true })
+      await writeFile(
+        path.join(artifactDirectory, 'solid-concave-shapes.png'),
+        Buffer.from(fixtureBase64, 'base64'),
+      )
+      await page.screenshot({
+        path: path.join(artifactDirectory, 'face-shading-dark.png'),
+        fullPage: true,
+      })
+      await page.locator('#environment-toggle').click()
+      await page.waitForFunction(() => (
+        document.querySelector('#environment-toggle')?.getAttribute('aria-checked') === 'true'
+      ))
+      await page.waitForTimeout(250)
+      await page.screenshot({
+        path: path.join(artifactDirectory, 'face-shading-light.png'),
+        fullPage: true,
+      })
+    }
+
+    assertExpectedDiagnostics('Concave face-shading fixture', diagnostics, [])
+    console.log(
+      `Concave GLB: ${glbDiagnostics.capTriangles} cap tris, ` +
+      `${glbDiagnostics.sideTriangles} side tris, ` +
+      `${glbDiagnostics.sideDirectionCount} side normal directions.`,
+    )
+  } finally {
+    await context.close()
+  }
+}
+
 
 async function readThemePill(page) {
   return page.locator('#environment-toggle').evaluate((toggle) => {
@@ -660,7 +795,7 @@ try {
   if (await projectLink.getAttribute('href') !== 'https://github.com/DarrenJohns/djtools') {
     throw new Error('The DJ Tools repository credit link is missing or incorrect.')
   }
-  if (await page.locator('.project-credit .version').textContent() !== 'v0.0.1') {
+  if (await page.locator('.project-credit .version').textContent() !== 'v0.0.2') {
     throw new Error('The displayed application version is incorrect.')
   }
   const creditBounds = await page.locator('.project-credit').boundingBox()
@@ -1063,6 +1198,7 @@ try {
 
   await checkStartupRendererFailure()
   await checkRuntimeContextLoss()
+  await checkConcaveFaceShading()
 } finally {
   await browser.close()
 }
