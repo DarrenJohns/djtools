@@ -1,0 +1,21 @@
+{
+  "name": "djtools",
+  "private": true,
+  "version": "0.0.1",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "workspaces": [
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace @djtools/image-to-webgl",
+    "build": "npm run build --workspace @djtools/image-to-webgl",
+    "build:pages": "npm run build && node scripts/build-pages.mjs",
+    "preview": "npm run preview --workspace @djtools/image-to-webgl",
+    "preview:pages": "vite preview --outDir dist",
+    "test": "npm run test --workspace @djtools/image-to-webgl",
+    "test:browser": "npm run test:browser --workspace @djtools/image-to-webgl",
+    "typecheck": "npm run typecheck --workspace @djtools/image-to-webgl"
+  }
+}
