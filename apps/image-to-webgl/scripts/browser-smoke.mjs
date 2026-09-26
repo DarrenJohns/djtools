@@ -129,6 +129,12 @@ try {
   if (await page.locator('.scope-note').count() !== 0) {
     throw new Error('The removed prototype boundary note is still present.')
   }
+  if (
+    await page.locator('.viewer-panel select').count() !== 0 ||
+    await page.getByRole('button', { name: 'Reset view' }).count() !== 0
+  ) {
+    throw new Error('The removed view preset controls are still present.')
+  }
   const introBounds = await page.locator('.intro').boundingBox()
   const dropZoneBounds = await page.locator('#file-drop-zone').boundingBox()
   if (!introBounds || !dropZoneBounds) {
@@ -251,8 +257,8 @@ try {
     throw new Error('The file metrics were replaced by a transient tracing message.')
   }
   await page.locator('#environment-toggle').click()
-  if (await page.locator('#environment-toggle').getAttribute('aria-pressed') !== 'true') {
-    throw new Error('The light environment toggle did not activate.')
+  if (await page.locator('#environment-toggle').getAttribute('aria-pressed') !== null) {
+    throw new Error('The environment action incorrectly exposes toggle-button semantics.')
   }
   if (await page.locator('.environment-label').textContent() !== 'Dark environment') {
     throw new Error('The environment toggle label did not update.')
@@ -283,6 +289,56 @@ try {
     )
   }
 
+  const previewCanvas = page.locator('#viewer canvas')
+  const previewSemantics = await previewCanvas.evaluate((canvas) => ({
+    role: canvas.getAttribute('role'),
+    label: canvas.getAttribute('aria-label'),
+    describedBy: canvas.getAttribute('aria-describedby'),
+    keyShortcuts: canvas.getAttribute('aria-keyshortcuts'),
+  }))
+  if (
+    previewSemantics.role !== 'img' ||
+    !previewSemantics.label?.includes('arrow keys to rotate') ||
+    previewSemantics.describedBy !== 'viewer-hint' ||
+    !previewSemantics.keyShortcuts?.includes('Home')
+  ) {
+    throw new Error(`The preview keyboard semantics are incomplete: ${JSON.stringify(previewSemantics)}`)
+  }
+  await previewCanvas.focus()
+  await page.keyboard.press('Home')
+  await page.waitForTimeout(100)
+  const defaultViewImage = await previewCanvas.screenshot()
+  await page.keyboard.press('ArrowLeft')
+  await page.waitForTimeout(100)
+  const rotatedViewImage = await previewCanvas.screenshot()
+  if (
+    await previewCanvas.getAttribute('data-view') !== 'custom' ||
+    rotatedViewImage.equals(defaultViewImage)
+  ) {
+    throw new Error('The focused preview did not respond to keyboard rotation.')
+  }
+  await page.keyboard.press('+')
+  await page.waitForTimeout(100)
+  const zoomedViewImage = await previewCanvas.screenshot()
+  if (zoomedViewImage.equals(rotatedViewImage)) {
+    throw new Error('The focused preview did not respond to keyboard zoom.')
+  }
+  await page.keyboard.press('Home')
+  await page.waitForTimeout(100)
+  const restoredViewImage = await previewCanvas.screenshot()
+  if (
+    await previewCanvas.getAttribute('data-view') !== 'isometric' ||
+    restoredViewImage.equals(zoomedViewImage)
+  ) {
+    throw new Error('The Home key did not reset the preview.')
+  }
+  if (
+    await page.locator('#edge-color-blend').getAttribute('aria-valuetext') !== '80 percent' ||
+    !(await page.locator('#edge-curve').getAttribute('aria-valuetext'))?.includes('bevel segments')
+  ) {
+    throw new Error('Slider value text is missing accessible units.')
+  }
+
   const toggleBeforeScroll = await page.locator('#environment-toggle').boundingBox()
   const hintBeforeScroll = await page.locator('.viewer-hint').boundingBox()
   await page.evaluate(() => window.scrollTo(0, Math.min(300, document.body.scrollHeight)))
@@ -293,15 +349,23 @@ try {
     !toggleBeforeScroll || !toggleAfterScroll ||
     Math.abs(toggleBeforeScroll.y - toggleAfterScroll.y) > 1
   ) {
-    throw new Error('The environment toggle moved with the page.')
+    throw new Error('The environment control moved outside its viewer overlay position.')
   }
   if (
     !hintBeforeScroll || !hintAfterScroll ||
     Math.abs(hintBeforeScroll.y - hintAfterScroll.y) > 1
   ) {
-    throw new Error('The viewer interaction hint moved with the page.')
+    throw new Error('The viewer interaction hint moved outside its viewer overlay position.')
   }
   await page.evaluate(() => window.scrollTo(0, 0))
+  const overlayPositions = await page.evaluate(() => ({
+    toggle: getComputedStyle(document.querySelector('#environment-toggle')).position,
+    hint: getComputedStyle(document.querySelector('.viewer-hint')).position,
+    parameters: getComputedStyle(document.querySelector('.parameter-bar')).position,
+  }))
+  if (Object.values(overlayPositions).some((position) => position !== 'absolute')) {
+    throw new Error(`Viewer overlays are not viewer-local: ${JSON.stringify(overlayPositions)}`)
+  }
 
   if (process.env.SCREENSHOT_PATH) {
     await page.screenshot({ path: process.env.SCREENSHOT_PATH, fullPage: true })
@@ -320,6 +384,87 @@ try {
   }
 
   console.log(`${result.message} WebGL canvas: ${canvasSize.width} x ${canvasSize.height}.`)
+
+  await page.emulateMedia({ reducedMotion: 'reduce' })
+  await page.waitForFunction(() => (
+    document.querySelector('#viewer canvas')?.dataset.motion === 'reduced'
+  ))
+  const reducedMotionStyles = await page.evaluate(() => ({
+    buttonTransition: getComputedStyle(document.querySelector('#environment-toggle')).transitionDuration,
+    downloadTransform: getComputedStyle(document.querySelector('#download-link')).transform,
+  }))
+  if (
+    !['0.01ms', '1e-05s'].includes(reducedMotionStyles.buttonTransition) ||
+    reducedMotionStyles.downloadTransform !== 'none'
+  ) {
+    throw new Error(`Reduced-motion styles were not applied: ${JSON.stringify(reducedMotionStyles)}`)
+  }
+
+  for (const viewport of [
+    { width: 800, height: 960 },
+    { width: 375, height: 812 },
+    { width: 320, height: 568 },
+  ]) {
+    const mobilePage = await browser.newPage({ viewport, hasTouch: true })
+    try {
+      await mobilePage.goto(baseUrl, { waitUntil: 'networkidle' })
+      await mobilePage.waitForFunction(
+        () => document.querySelector('#status')?.dataset.kind === 'success',
+        undefined,
+        { timeout: 60_000 },
+      )
+      const mobileLayout = await mobilePage.evaluate(() => {
+        const viewer = document.querySelector('.viewer-panel')?.getBoundingClientRect()
+        const overlays = ['#environment-toggle', '.viewer-hint', '.parameter-bar']
+          .map((selector) => document.querySelector(selector)?.getBoundingClientRect())
+        return {
+          viewportWidth: window.innerWidth,
+          documentWidth: document.documentElement.scrollWidth,
+          touchEnabled: 'ontouchstart' in window,
+          viewer: viewer?.toJSON(),
+          overlays: overlays.map((rect) => rect?.toJSON()),
+        }
+      })
+      if (mobileLayout.documentWidth > mobileLayout.viewportWidth + 1) {
+        throw new Error(
+          `${viewport.width}px layout overflows horizontally: ${mobileLayout.documentWidth}px.`,
+        )
+      }
+      if (!mobileLayout.touchEnabled || !mobileLayout.viewer) {
+        throw new Error(`${viewport.width}px layout is not touch-capable or has no viewer.`)
+      }
+      for (const overlay of mobileLayout.overlays) {
+        if (
+          !overlay ||
+          overlay.x < mobileLayout.viewer.x - 1 ||
+          overlay.y < mobileLayout.viewer.y - 1 ||
+          overlay.x + overlay.width > mobileLayout.viewer.x + mobileLayout.viewer.width + 1 ||
+          overlay.y + overlay.height > mobileLayout.viewer.y + mobileLayout.viewer.height + 1
+        ) {
+          throw new Error(`${viewport.width}px viewer overlay extends outside the viewer.`)
+        }
+      }
+      const environmentBox = await mobilePage.locator('#environment-toggle').boundingBox()
+      const parametersBox = await mobilePage.locator('.parameter-bar').boundingBox()
+      const hintBox = await mobilePage.locator('.viewer-hint').boundingBox()
+      const boxesOverlap = (first, second) => (
+        first && second &&
+        first.x < second.x + second.width &&
+        first.x + first.width > second.x &&
+        first.y < second.y + second.height &&
+        first.y + first.height > second.y
+      )
+      if (
+        boxesOverlap(environmentBox, parametersBox) ||
+        boxesOverlap(environmentBox, hintBox) ||
+        boxesOverlap(parametersBox, hintBox)
+      ) {
+        throw new Error(`${viewport.width}px viewer overlays collide.`)
+      }
+    } finally {
+      await mobilePage.close()
+    }
+  }
 } finally {
   await browser.close()
 }

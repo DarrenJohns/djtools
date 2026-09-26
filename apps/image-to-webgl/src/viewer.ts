@@ -28,7 +28,9 @@ export class ModelViewer {
   private readonly rim = new DirectionalLight()
   private grid: GridHelper
   private model: Group | null = null
+  private modelExtent = 1
   private animationFrame = 0
+  private readonly reducedMotionQuery = window.matchMedia('(prefers-reduced-motion: reduce)')
 
   constructor(container: HTMLElement) {
     this.container = container
@@ -38,11 +40,24 @@ export class ModelViewer {
     this.renderer = new WebGLRenderer({ antialias: true })
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
     this.renderer.shadowMap.enabled = true
+    this.renderer.domElement.tabIndex = 0
+    this.renderer.domElement.setAttribute('role', 'img')
+    this.renderer.domElement.setAttribute(
+      'aria-label',
+      'Interactive 3D object preview. Use arrow keys to rotate, plus or minus to zoom, and Home to reset the view.',
+    )
+    this.renderer.domElement.setAttribute('aria-describedby', 'viewer-hint')
+    this.renderer.domElement.setAttribute(
+      'aria-keyshortcuts',
+      'ArrowLeft ArrowRight ArrowUp ArrowDown + - Home',
+    )
     container.appendChild(this.renderer.domElement)
 
     this.controls = new OrbitControls(this.camera, this.renderer.domElement)
-    this.controls.enableDamping = true
     this.controls.dampingFactor = 0.06
+    this.updateMotionPreference()
+    this.reducedMotionQuery.addEventListener('change', this.updateMotionPreference)
+    this.renderer.domElement.addEventListener('keydown', this.handleKeyDown)
 
     this.scene.add(this.ambient)
 
@@ -91,14 +106,23 @@ export class ModelViewer {
     const size = bounds.getSize(new Vector3())
     loaded.position.sub(center)
     const extent = Math.max(size.x, size.y, size.z)
+    this.modelExtent = extent
     this.camera.near = Math.max(0.001, extent / 100)
     this.camera.far = extent * 100
     this.camera.updateProjectionMatrix()
     if (!preserveView) {
-      this.camera.position.set(extent * 1.4, extent * 0.9, extent * 1.8)
-      this.controls.target.set(0, 0, 0)
+      this.restoreDefaultView()
     }
     this.controls.update()
+  }
+
+  private restoreDefaultView(): void {
+    const extent = this.modelExtent
+    this.controls.target.set(0, 0, 0)
+    this.camera.up.set(0, 1, 0)
+    this.camera.position.set(extent * 1.4, extent * 0.9, extent * 1.8)
+    this.controls.update()
+    this.renderer.domElement.dataset.view = 'isometric'
   }
 
   setEnvironment(mode: 'dark' | 'light'): void {
@@ -125,6 +149,8 @@ export class ModelViewer {
   dispose(): void {
     cancelAnimationFrame(this.animationFrame)
     this.resizeObserver.disconnect()
+    this.reducedMotionQuery.removeEventListener('change', this.updateMotionPreference)
+    this.renderer.domElement.removeEventListener('keydown', this.handleKeyDown)
     this.controls.dispose()
     if (this.model) {
       this.disposeModel(this.model)
@@ -157,6 +183,54 @@ export class ModelViewer {
         material.dispose()
       })
     })
+  }
+
+  private updateMotionPreference = (): void => {
+    this.controls.enableDamping = !this.reducedMotionQuery.matches
+    this.renderer.domElement.dataset.motion = this.reducedMotionQuery.matches ? 'reduced' : 'full'
+  }
+
+  private handleKeyDown = (event: KeyboardEvent): void => {
+    const offset = this.camera.position.clone().sub(this.controls.target)
+    const rotationStep = Math.PI / 18
+
+    switch (event.key) {
+      case 'ArrowLeft':
+        offset.applyAxisAngle(this.camera.up, rotationStep)
+        break
+      case 'ArrowRight':
+        offset.applyAxisAngle(this.camera.up, -rotationStep)
+        break
+      case 'ArrowUp': {
+        const right = new Vector3().crossVectors(offset, this.camera.up).normalize()
+        offset.applyAxisAngle(right, -rotationStep)
+        break
+      }
+      case 'ArrowDown': {
+        const right = new Vector3().crossVectors(offset, this.camera.up).normalize()
+        offset.applyAxisAngle(right, rotationStep)
+        break
+      }
+      case '+':
+      case '=':
+        offset.multiplyScalar(0.9)
+        break
+      case '-':
+      case '_':
+        offset.multiplyScalar(1.1)
+        break
+      case 'Home':
+        this.restoreDefaultView()
+        event.preventDefault()
+        return
+      default:
+        return
+    }
+
+    this.camera.position.copy(this.controls.target).add(offset)
+    this.controls.update()
+    this.renderer.domElement.dataset.view = 'custom'
+    event.preventDefault()
   }
 
   private animate = (): void => {

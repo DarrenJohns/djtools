@@ -76,12 +76,13 @@ app.innerHTML = `
         id="environment-toggle"
         class="environment-toggle"
         type="button"
-        aria-pressed="false"
       >
         <span class="environment-icon" aria-hidden="true">☀</span>
         <span class="environment-label">Light environment</span>
       </button>
-      <div class="viewer-hint">Drag to orbit · Scroll to zoom · Right-drag to pan</div>
+      <div id="viewer-hint" class="viewer-hint">
+        Drag to orbit · Scroll to zoom · Right-drag to pan · Focus preview for keyboard controls
+      </div>
     </section>
   </main>
 `
@@ -244,18 +245,26 @@ fileDropZone.addEventListener('drop', (event) => {
 
 depthInput.addEventListener('input', () => {
   depthValue.value = Number(depthInput.value).toFixed(2)
+  depthInput.setAttribute('aria-valuetext', `${depthInput.value} model units`)
 })
 
 bevelWidthInput.addEventListener('input', () => {
   bevelWidthValue.value = Number(bevelWidthInput.value).toFixed(3)
+  bevelWidthInput.setAttribute('aria-valuetext', `${bevelWidthInput.value} model units`)
 })
 
 edgeColorBlendInput.addEventListener('input', () => {
   edgeColorBlendValue.value = `${edgeColorBlendInput.value}%`
+  edgeColorBlendInput.setAttribute('aria-valuetext', `${edgeColorBlendInput.value} percent`)
 })
 
 edgeCurveInput.addEventListener('input', () => {
   edgeCurveValue.value = `${edgeCurveInput.value}%`
+  const segments = 1 + Math.round(Number(edgeCurveInput.value) / 100 * 11)
+  edgeCurveInput.setAttribute(
+    'aria-valuetext',
+    `${edgeCurveInput.value} percent, ${segments} bevel segments`,
+  )
 })
 
 const conversionInputs = [depthInput, bevelWidthInput, edgeColorBlendInput, edgeCurveInput]
@@ -274,11 +283,15 @@ environmentToggle.addEventListener('click', () => {
   viewer.setEnvironment(environment)
   const isLight = environment === 'light'
   viewerPanel.dataset.environment = environment
-  environmentToggle.setAttribute('aria-pressed', String(isLight))
   environmentToggle.dataset.environment = environment
   environmentIcon.textContent = isLight ? '☾' : '☀'
   environmentLabel.textContent = isLight ? 'Dark environment' : 'Light environment'
 })
+
+depthInput.setAttribute('aria-valuetext', `${depthInput.value} model units`)
+bevelWidthInput.setAttribute('aria-valuetext', `${bevelWidthInput.value} model units`)
+edgeColorBlendInput.setAttribute('aria-valuetext', `${edgeColorBlendInput.value} percent`)
+edgeCurveInput.setAttribute('aria-valuetext', '55 percent, 7 bevel segments')
 
 window.addEventListener('beforeunload', () => {
   if (result) URL.revokeObjectURL(result.previewUrl)
